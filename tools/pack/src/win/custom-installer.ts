@@ -383,6 +383,9 @@ valid_existing_location:
 
   IfSilent silent_check no_existing_install
 silent_check:
+  IfFileExists "$INSTDIR\\${exeName}" 0 silent_detect_running_instances
+  StrCpy $RunningInstancesInstallRoot "$INSTDIR"
+silent_detect_running_instances:
   Call DetectRunningInstances
   \${If} $RunningInstancesOutput != ""
     Push "running instances detected before silent install: $RunningInstancesOutput"

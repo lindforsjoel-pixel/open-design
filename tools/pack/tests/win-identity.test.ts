@@ -75,4 +75,14 @@ describe("resolveWinInstallIdentity", () => {
     expect(source).toContain('WriteRegStr HKCU "${registryKey}" "DisplayName" "${productName}"');
     expect(source).not.toContain('"DisplayName" "${productName} \\${APP_VERSION}"');
   });
+
+  it("checks the silent install target directory for running instances before overwriting files", async () => {
+    const source = await readFile(new URL("../src/win/custom-installer.ts", import.meta.url), "utf8");
+    const silentCheck = source.slice(source.indexOf("silent_check:"), source.indexOf("IfFileExists \"$INSTDIR\\\\${exeName}\" existing_install"));
+    expect(silentCheck).toContain('IfFileExists "$INSTDIR\\\\${exeName}" 0 silent_detect_running_instances');
+    expect(silentCheck).toContain('StrCpy $RunningInstancesInstallRoot "$INSTDIR"');
+    expect(silentCheck.indexOf('StrCpy $RunningInstancesInstallRoot "$INSTDIR"')).toBeLessThan(
+      silentCheck.indexOf("Call DetectRunningInstances"),
+    );
+  });
 });
