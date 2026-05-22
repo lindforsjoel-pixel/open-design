@@ -792,6 +792,18 @@ function OnboardingView({
     useCase: [] as string[],
     source: '',
   });
+  // Live mirror of `profile` so closures that fire faster than React
+  // commits (rapid dropdown picks, the Finish-setup click after the
+  // last onChange) read the latest selection instead of the value the
+  // closure captured at render-time. Multi-select use_case in
+  // particular needed this: two quick adds within one commit cycle
+  // both read `previous = new Set(profile.useCase = stale [])` and
+  // emitted on both — fine — but reading any cumulative summary off
+  // `profile` directly missed the second pick until the next commit.
+  const profileRef = useRef(profile);
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
   const agentRevealTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const cliScanTokenRef = useRef(0);
   const apiProtocol = config.apiProtocol ?? 'anthropic';
@@ -977,6 +989,17 @@ function OnboardingView({
       ? snapshot.sourceCount > 0 || snapshot.hasBrandDescription
       : Boolean(designSource);
     const sourceCount = snapshot ? snapshot.sourceCount : 0;
+    // Read from `profileRef` for the same reason `emitAboutYouSubmit`
+    // does: a Finish-setup click may fire before React commits the
+    // latest dropdown pick, leaving `profile` (closure-captured at
+    // render time) one tick behind.
+    const liveProfile = profileRef.current;
+    const hasAboutYou = Boolean(
+      liveProfile.role
+        || liveProfile.orgSize
+        || liveProfile.useCase.length > 0
+        || liveProfile.source,
+    );
     trackOnboardingCompleteResult(analytics.track, {
       page_name: 'onboarding',
       area: 'onboarding',
@@ -984,14 +1007,23 @@ function OnboardingView({
       exit_step_name: info.stepName,
       completion_type: completionType,
       runtime_type: currentRuntimeType(),
-      has_about_you: Boolean(
-        profile.role || profile.orgSize || profile.useCase.length > 0 || profile.source,
-      ),
+      has_about_you: hasAboutYou,
       has_design_system_request: hasRequest,
       source_count: sourceCount,
       ...(extra.errorCode ? { error_code: extra.errorCode } : {}),
       duration_ms: Math.max(0, Date.now() - onboardingStartedAtRef.current),
       onboarding_session_id: onboardingSessionId,
+      // Survey-snapshot mirror of `about_you_submit` so the funnel has
+      // a second carrier for the user's picks. Only attached when the
+      // user actually touched the About-you step.
+      ...(hasAboutYou ? {
+        role: liveProfile.role || 'unknown',
+        organization_size: liveProfile.orgSize || 'unknown',
+        use_cases: liveProfile.useCase.length > 0
+          ? liveProfile.useCase
+          : ['unknown'],
+        discovery_source: liveProfile.source || 'unknown',
+      } : {}),
     });
   }
 
@@ -1196,6 +1228,17 @@ function OnboardingView({
   }
   function handlePrimaryAction() {
     if (isLastStep) {
+      // Emit the About-you survey snapshot FIRST, before the
+      // continue/complete pair. This is the bombproof carrier for the
+      // user's role / org size / use case / discovery source picks:
+      // per-dropdown clicks are racy on a fast Finish-setup (the user
+      // can pick all four dropdowns and click Finish inside one ~3s
+      // window, and PostHog's posthog-js client may not flush the
+      // individual rows before the route change unmounts the analytics
+      // provider). The snapshot click + the survey fields on
+      // `onboarding_complete_result` give the funnel two independent
+      // paths for the same data.
+      emitAboutYouSubmit();
       emitOnboardingClick('continue', 'continue');
       // Last-step Continue without a DS generation = "completed
       // without design system". The Generate path inside the
@@ -1208,6 +1251,22 @@ function OnboardingView({
     }
     emitOnboardingClick('continue', 'continue');
     setStep((current) => current + 1);
+  }
+
+  // Survey snapshot. Reads `profileRef.current` rather than `profile`
+  // because Finish-setup may fire within the same render commit as the
+  // user's last dropdown pick, before React has rebound the closure to
+  // the latest state. `'unknown'` covers an untouched field on the
+  // About-you step (the spec keeps the wire type open-string so a new
+  // role / use-case option doesn't force a contract bump).
+  function emitAboutYouSubmit(): void {
+    const snapshot = profileRef.current;
+    emitOnboardingClick('about_you_submit', 'continue', {
+      role: snapshot.role || 'unknown',
+      organization_size: snapshot.orgSize || 'unknown',
+      use_cases: snapshot.useCase.length > 0 ? snapshot.useCase : ['unknown'],
+      discovery_source: snapshot.source || 'unknown',
+    });
   }
 
   async function scanCliAgents() {
@@ -1491,7 +1550,14 @@ function OnboardingView({
                   placeholder={t('settings.onboardingSelectPlaceholder')}
                   value={profile.role}
                   options={roleOptions}
-                  onChange={(value) => setProfile((current) => ({ ...current, role: value }))}
+                  onChange={(value) => {
+                    if (typeof value === 'string' && value) {
+                      emitOnboardingClick('role', 'select_option', {
+                        role: value,
+                      });
+                    }
+                    setProfile((current) => ({ ...current, role: value }));
+                  }}
                 />
                 <OnboardingDropdown
                   label={t('settings.onboardingOrgSizeLabel')}
@@ -1518,10 +1584,15 @@ function OnboardingView({
                     // Multi-select: emit one click per newly added
                     // value (delta), not per render of the whole
                     // selection. The dashboard then sees one row per
-                    // use_case chosen.
-                    const previous = new Set(profile.useCase);
+                    // use_case chosen. Compare against `profileRef`
+                    // not `profile` — rapid picks can fire onChange
+                    // before React commits the previous pick, so a
+                    // closure-captured `profile.useCase` is one tick
+                    // behind and re-emits the prior pick on every
+                    // subsequent change.
+                    const previousSet = new Set(profileRef.current.useCase);
                     for (const v of value) {
-                      if (!previous.has(v)) {
+                      if (!previousSet.has(v)) {
                         emitOnboardingClick('use_case', 'select_option', { use_case: v });
                       }
                     }

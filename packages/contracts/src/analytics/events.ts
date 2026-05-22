@@ -332,6 +332,13 @@ export type TrackingOnboardingScanResult = 'success' | 'failed' | 'timeout';
 export type TrackingOnboardingOrganizationSize = string;
 export type TrackingOnboardingUseCase = string;
 export type TrackingOnboardingDiscoverySource = string;
+// User's self-identified role. Same wire shape and rationale as the
+// other About-you survey strings — `pm`, `designer`, `engineer`,
+// `marketing`, `growth`, `ops`, `founder`, `student`, `other` are the
+// current options from `apps/web/src/components/EntryShell.tsx`
+// (`roleOptions`); the type stays open so adding a future role doesn't
+// force a contract bump.
+export type TrackingOnboardingRole = string;
 
 export interface OnboardingPageViewProps {
   page_name: 'onboarding';
@@ -359,9 +366,15 @@ export type TrackingOnboardingClickElement =
   | 'skip'
   | 'generate'
   // About you fields
+  | 'role'
   | 'organization_size'
   | 'use_case'
   | 'hear_about_us'
+  // Fires once on Finish-setup, carrying the full survey snapshot
+  // (role + organization_size + use_case + discovery_source) so the
+  // funnel always has the user's final picks even when individual
+  // dropdown clicks were dropped on a fast navigate.
+  | 'about_you_submit'
   // Design system source options
   | 'github_repo'
   | 'local_code'
@@ -381,12 +394,12 @@ export type TrackingOnboardingClickAction =
   | 'show_access_methods';
 
 // All optional except the discriminators (area/element/action/step/
-// session id). `organization_size`/`use_case`/`discovery_source` only
-// ride along on About-you clicks. `source_type`/`has_brand_description`/
-// `source_count` only on Design-system source clicks. `runtime_type`/
-// `is_recommended` only on Connect clicks. Doc explicitly forbids
-// brand text, GitHub URL, file name, or path values — all enum + bool
-// + count, no free-text.
+// session id). `role`/`organization_size`/`use_case`/`discovery_source`
+// ride along on About-you clicks AND on the `about_you_submit` snapshot
+// click. `source_type`/`has_brand_description`/`source_count` only on
+// Design-system source clicks. `runtime_type`/`is_recommended` only on
+// Connect clicks. Doc explicitly forbids brand text, GitHub URL, file
+// name, or path values — all enum + bool + count, no free-text.
 export interface OnboardingClickProps {
   page_name: 'onboarding';
   area: TrackingOnboardingArea;
@@ -397,8 +410,14 @@ export interface OnboardingClickProps {
   onboarding_session_id: string;
   runtime_type?: TrackingOnboardingRuntimeType;
   is_recommended?: boolean;
+  role?: TrackingOnboardingRole;
   organization_size?: TrackingOnboardingOrganizationSize;
   use_case?: TrackingOnboardingUseCase;
+  // Multi-pick variant of `use_case` for the survey-snapshot
+  // `about_you_submit` click. Individual `use_case` picks still go
+  // through the scalar field one row per option. The list captures
+  // the final selection at Finish-setup time without firing N rows.
+  use_cases?: TrackingOnboardingUseCase[];
   discovery_source?: TrackingOnboardingDiscoverySource;
   source_type?: TrackingOnboardingSourceType;
   has_brand_description?: boolean;
@@ -433,6 +452,16 @@ export interface OnboardingCompleteResultProps {
   error_code?: string;
   duration_ms: number;
   onboarding_session_id: string;
+  // Survey-snapshot fields. Mirror the values from
+  // `about_you_submit` ui_click so dashboards can read the user's
+  // picks even if the individual dropdown clicks were dropped on
+  // navigate. `'unknown'` is the wire value for a field the user
+  // never touched on the About-you step; missing field means the user
+  // skipped the entire step.
+  role?: TrackingOnboardingRole;
+  organization_size?: TrackingOnboardingOrganizationSize;
+  use_cases?: TrackingOnboardingUseCase[];
+  discovery_source?: TrackingOnboardingDiscoverySource;
 }
 
 // --- Design systems page_view (multi-surface) ---
