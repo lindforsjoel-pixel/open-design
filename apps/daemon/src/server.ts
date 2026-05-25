@@ -785,6 +785,7 @@ export function normalizeCommentAttachments(input) {
         currentText: compactString(raw.currentText, 160),
         pagePosition: normalizeAttachmentPosition(raw.pagePosition),
         htmlHint: compactString(raw.htmlHint, 180),
+        style: normalizeAnnotationStyle(raw.style),
         selectionKind,
         memberCount,
         podMembers,
@@ -820,6 +821,7 @@ export function renderCommentAttachmentHint(commentAttachments) {
       `position: ${formatAttachmentPosition(item.pagePosition)}`,
       `currentText: ${item.currentText || '(empty)'}`,
       `htmlHint: ${item.htmlHint || '(none)'}`,
+      `computedStyle: ${formatAnnotationStyle(item.style) || '(none)'}`,
       `comment: ${item.comment}`,
     );
     if (targetKind === 'visual') {
@@ -838,6 +840,8 @@ export function renderCommentAttachmentHint(commentAttachments) {
         lines.push(
           `member.${memberIndex + 1}: ${member.elementId} | ${member.label || '(unlabeled)'} | ${member.selector}`,
         );
+        const memberStyle = formatAnnotationStyle(member.style);
+        if (memberStyle) lines.push(`member.${memberIndex + 1}.computedStyle: ${memberStyle}`);
       });
     }
   }
@@ -896,10 +900,49 @@ function normalizeAttachmentPodMembers(input) {
         text: compactString(member.text, 160),
         position: normalizeAttachmentPosition(member.position),
         htmlHint: compactString(member.htmlHint, 180),
+        style: normalizeAnnotationStyle(member.style),
       };
     })
     .filter(Boolean);
 }
+
+function normalizeAnnotationStyle(input) {
+  if (!input || typeof input !== 'object') return undefined;
+  const style = {};
+  for (const key of ANNOTATION_STYLE_KEYS) {
+    const value = input[key];
+    if (typeof value !== 'string') continue;
+    const trimmed = value.replace(/\s+/g, ' ').trim();
+    if (trimmed) style[key] = trimmed.slice(0, 120);
+  }
+  return Object.keys(style).length > 0 ? style : undefined;
+}
+
+function formatAnnotationStyle(style) {
+  if (!style || typeof style !== 'object') return '';
+  return ANNOTATION_STYLE_KEYS
+    .map((key) => {
+      const value = style[key];
+      return value ? `${key}: ${value}` : null;
+    })
+    .filter(Boolean)
+    .join('; ');
+}
+
+const ANNOTATION_STYLE_KEYS = [
+  'color',
+  'backgroundColor',
+  'fontSize',
+  'fontWeight',
+  'lineHeight',
+  'textAlign',
+  'fontFamily',
+  'paddingTop',
+  'paddingRight',
+  'paddingBottom',
+  'paddingLeft',
+  'borderRadius',
+];
 
 function finiteAttachmentNumber(value) {
   return Number.isFinite(value) ? Math.round(value) : 0;
