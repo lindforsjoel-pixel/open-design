@@ -1444,6 +1444,7 @@ export const hu: Dict = {
   'assistant.thought': 'Gondolkodott',
   'assistant.thoughtFor': 'Gondolkodott {s} mp-ig',
   'assistant.systemReminder': 'Rendszer-emlékeztető',
+  'assistant.possiblePromptInjection': 'Lehetséges prompt injekció',
   'assistant.waitingFirstOutput': 'Az első kimenetre vár',
   'assistant.statusBootingAgent': 'Ügynök indítása',
   'assistant.statusPreparing': 'Preparing...',

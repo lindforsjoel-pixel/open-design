@@ -1431,6 +1431,7 @@ export const tr: Dict = {
   'assistant.thought': 'Düşündü',
   'assistant.thoughtFor': '{s}sn düşündü',
   'assistant.systemReminder': 'Sistem hatırlatıcısı',
+  'assistant.possiblePromptInjection': 'Olası istem enjeksiyonu',
   'assistant.waitingFirstOutput': 'İlk girdi için bekleniyor',
   'assistant.statusBootingAgent': 'Ajan başlatılıyor',
   'assistant.statusPreparing': 'Preparing...',

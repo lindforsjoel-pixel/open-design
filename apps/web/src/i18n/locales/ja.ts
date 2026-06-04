@@ -1331,6 +1331,7 @@ export const ja: Dict = {
   'assistant.thought': '思考完了',
   'assistant.thoughtFor': '{s}秒間思考',
   'assistant.systemReminder': 'システムリマインダー',
+  'assistant.possiblePromptInjection': 'プロンプトインジェクションの疑い',
   'assistant.waitingFirstOutput': '最初の出力を待っています',
   'assistant.statusBootingAgent': 'エージェントを起動中',
   'assistant.statusPreparing': 'Preparing...',

@@ -2286,6 +2286,7 @@ export const zhCN: Dict = {
   'assistant.thought': '思考完毕',
   'assistant.thoughtFor': '已深度思考（用时 {s} 秒）',
   'assistant.systemReminder': '系统提示',
+  'assistant.possiblePromptInjection': '可能的提示词注入',
   'assistant.waitingFirstOutput': '等待首批输出中',
   'assistant.statusBootingAgent': '正在启动代理',
   'assistant.statusPreparing': 'Preparing...',

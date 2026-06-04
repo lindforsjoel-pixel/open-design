@@ -2045,6 +2045,7 @@ export const fr: Dict = {
   'assistant.thought': 'A réfléchi',
   'assistant.thoughtFor': 'Réflexion {s}s',
   'assistant.systemReminder': 'Rappel système',
+  'assistant.possiblePromptInjection': 'Injection de prompt possible',
   'assistant.waitingFirstOutput': 'En attente de la première sortie',
   'assistant.statusBootingAgent': 'Démarrage de l\'agent',
   'assistant.statusPreparing': 'Preparing...',

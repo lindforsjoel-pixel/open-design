@@ -1332,6 +1332,7 @@ export const de: Dict = {
   'assistant.thought': 'Gedacht',
   'assistant.thoughtFor': 'Nachgedacht ({s}s)',
   'assistant.systemReminder': 'Systemhinweis',
+  'assistant.possiblePromptInjection': 'Mögliche Prompt-Injektion',
   'assistant.waitingFirstOutput': 'Warte auf erste Ausgabe',
   'assistant.statusBootingAgent': 'Agent wird gestartet',
   'assistant.statusPreparing': 'Preparing...',

@@ -1405,6 +1405,7 @@ export const th: Dict = {
   'assistant.thought': 'คิดแล้ว',
   'assistant.thoughtFor': 'คิด {s} วินาที',
   'assistant.systemReminder': 'จดบอกเล่าจากสิ่งที่สำคัญในระบบ',
+  'assistant.possiblePromptInjection': 'อาจมีการฉีดพรอมต์',
   'assistant.waitingFirstOutput': 'รอบอกการประมวลครั้งเปิดฉาก',
   'assistant.statusBootingAgent': 'เริ่มปลุกเอเจนต์ก่อน',
   'assistant.statusPreparing': 'Preparing...',

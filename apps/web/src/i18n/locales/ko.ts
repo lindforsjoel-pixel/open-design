@@ -1444,6 +1444,7 @@ export const ko: Dict = {
   'assistant.thought': '생각 완료',
   'assistant.thoughtFor': '{s}초 동안 생각함',
   'assistant.systemReminder': '시스템 알림',
+  'assistant.possiblePromptInjection': '프롬프트 인젝션 가능성',
   'assistant.waitingFirstOutput': '첫 번째 출력 대기 중',
   'assistant.statusBootingAgent': '에이전트 부팅 중',
   'assistant.statusPreparing': 'Preparing...',

@@ -2668,6 +2668,7 @@ export interface Dict {
   'assistant.thought': string;
   'assistant.thoughtFor': string;
   'assistant.systemReminder': string;
+  'assistant.possiblePromptInjection': string;
   'assistant.waitingFirstOutput': string;
   'assistant.statusBootingAgent': string;
   'assistant.statusPreparing': string;

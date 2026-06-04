@@ -1485,6 +1485,7 @@ export const ptBR: Dict = {
   'assistant.thought': 'Pensou',
   'assistant.thoughtFor': 'Pensou por {s}s',
   'assistant.systemReminder': 'Lembrete do sistema',
+  'assistant.possiblePromptInjection': 'Possível injeção de prompt',
   'assistant.waitingFirstOutput': 'Aguardando primeira saída',
   'assistant.statusBootingAgent': 'Iniciando agente',
   'assistant.statusPreparing': 'Preparing...',

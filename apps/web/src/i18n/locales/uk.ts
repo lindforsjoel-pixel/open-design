@@ -1486,6 +1486,7 @@ export const uk: Dict = {
   'assistant.thought': 'Подумав',
   'assistant.thoughtFor': 'Думав {s}с',
   'assistant.systemReminder': 'Системне нагадування',
+  'assistant.possiblePromptInjection': 'Можлива ін’єкція промпту',
   'assistant.waitingFirstOutput': 'Очікування першого виходу',
   'assistant.statusBootingAgent': 'Завантаження агента',
   'assistant.statusPreparing': 'Preparing...',
