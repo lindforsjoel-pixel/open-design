@@ -19,6 +19,7 @@ import type { PluginFolderAgentAction } from './design-files/pluginFolderActions
 import { getPluginFolderCandidates } from './design-files/pluginFolders';
 import { Icon } from './Icon';
 import { LiveArtifactBadges } from './LiveArtifactBadges';
+import { ProjectGitDialog } from './ProjectGitDialog';
 import { isRenderableSketchJson, SketchPreview } from './SketchPreview';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
@@ -340,6 +341,7 @@ export function DesignFilesPanel({
   const [copiedLocalPath, setCopiedLocalPath] = useState<string | null>(null);
   const [currentDir, setCurrentDir] = useState<string>(() => navState?.currentDir ?? '');
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [gitDialogOpen, setGitDialogOpen] = useState(false);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the parent's create-target in sync with the folder being viewed, so
@@ -912,8 +914,7 @@ export function DesignFilesPanel({
         <Icon name="upload" size={13} />
         <span>{t('designFiles.upload.label')}</span>
       </button>
-      {onCreateDesignSystemFromProject || onDuplicateProject ? (
-        <div className="df-project-menu-anchor" ref={projectMenuRef}>
+      <div className="df-project-menu-anchor" ref={projectMenuRef}>
           <button
             type="button"
             className="df-project-menu-trigger"
@@ -927,6 +928,17 @@ export function DesignFilesPanel({
           </button>
           {projectMenuOpen ? (
             <div className="df-project-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setProjectMenuOpen(false);
+                  setGitDialogOpen(true);
+                }}
+              >
+                <Icon name="fork" size={13} />
+                <span>{t('designFiles.git.title')}</span>
+              </button>
               {onCreateDesignSystemFromProject ? (
                 <button
                   type="button"
@@ -967,10 +979,13 @@ export function DesignFilesPanel({
               ) : null}
             </div>
           ) : null}
-        </div>
-      ) : null}
+      </div>
     </div>
   );
+
+  const gitDialog = gitDialogOpen ? (
+    <ProjectGitDialog projectId={projectId} onClose={() => setGitDialogOpen(false)} />
+  ) : null;
 
   const breadcrumbs = (
     <nav className="df-breadcrumbs" aria-label={t('designFiles.crumbs')}>
@@ -1392,6 +1407,7 @@ export function DesignFilesPanel({
           </button>
         </div>
       ) : null}
+      {gitDialog}
     </div>
   );
 }

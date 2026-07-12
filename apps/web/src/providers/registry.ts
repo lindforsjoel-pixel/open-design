@@ -15,6 +15,9 @@ import type {
   ImportLocalDesignSystemRequest,
   ImportLocalDesignSystemResponse,
   ReplaceProjectWorkingDirResponse,
+  ProjectGitCommitRequest,
+  ProjectGitCommitResponse,
+  ProjectGitStatusResponse,
   ProjectFileTextPreviewResponse,
   ProjectFileVersion,
   ProjectFileVersionSource,
@@ -2380,6 +2383,44 @@ export async function replaceProjectWorkingDir(
     throw new Error(body.message);
   }
   return (await resp.json()) as ReplaceProjectWorkingDirResponse;
+}
+
+export async function fetchProjectGitStatus(projectId: string): Promise<ProjectGitStatusResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/git/status`, {
+    cache: 'no-store',
+  });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as ProjectGitStatusResponse;
+}
+
+export async function initializeProjectGit(projectId: string): Promise<ProjectGitStatusResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/git/init`, {
+    method: 'POST',
+  });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as ProjectGitStatusResponse;
+}
+
+export async function commitProjectGitChanges(
+  projectId: string,
+  request: ProjectGitCommitRequest,
+): Promise<ProjectGitCommitResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/git/commit`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as ProjectGitCommitResponse;
 }
 
 // Hand-off (open project in local app). The daemon enumerates installed

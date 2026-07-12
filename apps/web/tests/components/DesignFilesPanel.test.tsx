@@ -159,6 +159,15 @@ describe("DesignFilesPanel sections", () => {
     expect(screen.getByTestId("design-files-upload-trigger")).toBeTruthy();
   });
 
+  it('opens project-scoped version control from the project actions menu', async () => {
+    renderPanel([file({ name: 'page.html', kind: 'html' })]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Version control' }));
+
+    expect(await screen.findByTestId('project-git-dialog')).toBeTruthy();
+  });
+
   it("shows prioritized project starter actions in the empty state", () => {
     const onNewSketch = vi.fn();
     const onOpenBrowser = vi.fn();
