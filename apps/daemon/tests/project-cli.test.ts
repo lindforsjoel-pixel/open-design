@@ -69,6 +69,59 @@ async function startProjectStubServer(): Promise<StubServer> {
         }));
         return;
       }
+      if (captured.method === 'GET' && captured.url === '/api/projects/source-project/git/status') {
+        res.end(JSON.stringify({
+          available: true,
+          repository: true,
+          projectRoot: '/workspace/source-project',
+          repositoryRoot: '/workspace/source-project',
+          branch: 'feat/source-control',
+          detached: false,
+          upstream: 'origin/feat/source-control',
+          ahead: 2,
+          behind: 1,
+          clean: false,
+          changes: [{
+            path: 'src/app.ts',
+            kind: 'modified',
+            indexStatus: ' ',
+            worktreeStatus: 'M',
+            staged: false,
+            unstaged: true,
+            conflicted: false,
+          }],
+          truncated: false,
+          lastCommit: null,
+        }));
+        return;
+      }
+      if (captured.method === 'POST' && captured.url === '/api/projects/source-project/git/commit') {
+        res.end(JSON.stringify({
+          commit: {
+            hash: 'abc123456789',
+            shortHash: 'abc1234',
+            subject: 'Update app',
+            author: 'Test',
+            authoredAt: '2026-07-12T10:00:00Z',
+          },
+          status: {
+            available: true,
+            repository: true,
+            projectRoot: '/workspace/source-project',
+            repositoryRoot: '/workspace/source-project',
+            branch: 'feat/source-control',
+            detached: false,
+            upstream: 'origin/feat/source-control',
+            ahead: 3,
+            behind: 1,
+            clean: true,
+            changes: [],
+            truncated: false,
+            lastCommit: null,
+          },
+        }));
+        return;
+      }
 
       res.statusCode = 404;
       res.end(JSON.stringify({ error: { code: 'unexpected-request', message: captured.url } }));
@@ -171,5 +224,57 @@ describe('od project CLI', () => {
       url: '/api/projects/source-project/duplicate',
     });
     expect(JSON.parse(stub.requests[0]!.body)).toEqual({ name: 'Duplicate Copy' });
+  });
+
+  it('prints project-scoped Git status without mutating the repository', async () => {
+    stub = await startProjectStubServer();
+
+    const result = await runCli([
+      'project',
+      'git',
+      'status',
+      'source-project',
+      '--daemon-url',
+      stub.baseUrl,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('feat/source-control -> origin/feat/source-control (+2/-1)');
+    expect(result.stdout).toContain(' M\tsrc/app.ts');
+    expect(stub.requests).toEqual([
+      expect.objectContaining({ method: 'GET', url: '/api/projects/source-project/git/status' }),
+    ]);
+  });
+
+  it('sends only explicit paths to the project Git commit endpoint', async () => {
+    stub = await startProjectStubServer();
+
+    const result = await runCli([
+      'project',
+      'git',
+      'commit',
+      'source-project',
+      'src/app.ts',
+      '--message',
+      'Update app',
+      '--json',
+      '--daemon-url',
+      stub.baseUrl,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(expect.objectContaining({
+      commit: expect.objectContaining({ shortHash: 'abc1234' }),
+    }));
+    expect(stub.requests).toHaveLength(1);
+    expect(stub.requests[0]).toMatchObject({
+      method: 'POST',
+      url: '/api/projects/source-project/git/commit',
+    });
+    expect(JSON.parse(stub.requests[0]!.body)).toEqual({
+      message: 'Update app',
+      paths: ['src/app.ts'],
+    });
   });
 });
