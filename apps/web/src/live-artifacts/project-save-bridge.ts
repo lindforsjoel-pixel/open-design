@@ -20,12 +20,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function activeCoreUiProjectSaveRequest(
-  eventSource: MessageEventSource | null,
-  activePreviewWindow: Window | null,
-  value: unknown,
-): CoreUiCustomizationSaveRequest | null {
-  if (eventSource === null || eventSource !== activePreviewWindow || !isPlainObject(value)) return null;
+export function coreUiProjectSaveRequest(value: unknown): CoreUiCustomizationSaveRequest | null {
+  if (!isPlainObject(value)) return null;
   if (Object.keys(value).sort().join(',') !== ['type', 'version', 'requestId', 'kind', 'settings'].sort().join(',')) return null;
   const settings = value.settings;
   if (

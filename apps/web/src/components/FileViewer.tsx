@@ -5,6 +5,7 @@ import { APP_CHROME_FILE_ACTIONS_ID, APP_CHROME_FILE_ACTIONS_SELECTOR } from './
 import {
   buildSocialSharePayload,
   OPEN_DESIGN_GITHUB_REPO_URL,
+  type BoundedJsonObject,
   type ProjectFileVersion,
   type SocialShareRequest,
   type SocialShareResponse,
@@ -84,7 +85,8 @@ import {
   writeProjectTextFile,
   writeProjectTextFileDetailed,
 } from '../providers/registry';
-import { activeCoreUiProjectSaveRequest } from '../live-artifacts/project-save-bridge';
+import { coreUiProjectSaveRequest } from '../live-artifacts/project-save-bridge';
+import { renderProjectTemplatePreview } from '../live-artifacts/project-template-preview';
 import type { ProjectFilePreview } from '../providers/registry';
 import {
   downloadImageDataUrl,
@@ -6133,6 +6135,7 @@ function HtmlViewer({
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [source, setSource] = useState<string | null>(liveHtml ?? null);
   const [routingSource, setRoutingSource] = useState<string | null>(liveHtml ?? null);
+  const [projectTemplateDataJson, setProjectTemplateDataJson] = useState<BoundedJsonObject | null>(null);
   const [serverPoweredPreviewRequired, setServerPoweredPreviewRequired] = useState(false);
   const [inlinedSource, setInlinedSource] = useState<string | null>(null);
   const [zoom, setZoom] = useState(100);
@@ -6267,11 +6270,8 @@ function HtmlViewer({
   useEffect(() => {
     if (!projectSaveArtifactId || mode !== 'preview') return undefined;
     const onMessage = (event: MessageEvent<unknown>) => {
-      const request = activeCoreUiProjectSaveRequest(
-        event.source,
-        iframeRef.current?.contentWindow ?? null,
-        event.data,
-      );
+      if (!isOurPreviewIframeSource(event.source)) return;
+      const request = coreUiProjectSaveRequest(event.data);
       if (!request) return;
       const replyTarget = event.source as Window;
       void saveLiveArtifactProjectCustomization(projectId, projectSaveArtifactId, request).then((receipt) => {
@@ -6281,7 +6281,7 @@ function HtmlViewer({
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [mode, onFileSaved, projectId, projectSaveArtifactId]);
+  }, [isOurPreviewIframeSource, mode, onFileSaved, projectId, projectSaveArtifactId]);
   const setCommentComposerHostRef = useCallback((node: HTMLDivElement | null) => {
     setCommentComposerHost((current) => (current === node ? current : node));
   }, []);
@@ -6918,6 +6918,31 @@ function HtmlViewer({
   ]);
 
   useEffect(() => {
+    if (!projectSaveArtifactId || file.name !== 'template.html') {
+      setProjectTemplateDataJson(null);
+      return;
+    }
+    let cancelled = false;
+    setProjectTemplateDataJson(null);
+    const cacheBustKey = `${file.mtime}-${reloadKey}-${filesRefreshKey}`;
+    void fetchProjectFileText(projectId, 'data.json', { cache: 'no-store', cacheBustKey }).then((text) => {
+      if (cancelled || text == null) return;
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          setProjectTemplateDataJson(parsed as BoundedJsonObject);
+        }
+      } catch {
+        // Keep the preview unrendered when canonical data is malformed; raw
+        // {{data...}} bindings must never leak into the rendered surface.
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [file.mtime, file.name, filesRefreshKey, projectId, projectSaveArtifactId, reloadKey]);
+
+  useEffect(() => {
     let cancelled = false;
     setDeployResult(null);
     setDeployError(null);
@@ -7026,7 +7051,16 @@ function HtmlViewer({
     if (!effectiveDeck || source == null) return source;
     return normalizeDeckVisualSource(removeSpeakerNotesFromHtml(source));
   }, [effectiveDeck, source]);
-  const livePreviewSource = inlinedSource ?? deckVisualSource;
+  const rawLivePreviewSource = inlinedSource ?? deckVisualSource;
+  const livePreviewSource = useMemo(() => {
+    if (!projectSaveArtifactId || file.name !== 'template.html') return rawLivePreviewSource;
+    if (rawLivePreviewSource == null || projectTemplateDataJson == null) return null;
+    try {
+      return renderProjectTemplatePreview(rawLivePreviewSource, projectTemplateDataJson);
+    } catch {
+      return null;
+    }
+  }, [file.name, projectSaveArtifactId, projectTemplateDataJson, rawLivePreviewSource]);
   // Annotation modes that should hold the preview still while open. Manual
   // Edit is handled by its own freeze just below; these are the non-edit
   // passes (Mark/Draw, Comment, Inspect) that also must not be yanked out
@@ -7128,7 +7162,7 @@ function HtmlViewer({
     urlModeBridge,
     inspectMode,
     drawMode: drawOverlayOpen,
-    forceInline: (forceInline || needsSandboxShim) && !needsPowered,
+    forceInline: (forceInline || needsSandboxShim || Boolean(projectSaveArtifactId)) && !needsPowered,
     needsFocusGuard: needsFocusGuard && !needsPowered,
     projectRootAssetRefs,
   };

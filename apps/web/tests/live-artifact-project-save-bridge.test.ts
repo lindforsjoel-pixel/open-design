@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 
-import { activeCoreUiProjectSaveRequest } from '../src/live-artifacts/project-save-bridge';
+import { coreUiProjectSaveRequest } from '../src/live-artifacts/project-save-bridge';
+import { renderProjectTemplatePreview } from '../src/live-artifacts/project-template-preview';
 
 const settings = {
   field: 'carbon-blue',
@@ -26,20 +27,17 @@ describe('live artifact project save host bridge', () => {
     const liveViewerStart = source.indexOf('export function LiveArtifactViewer(');
     const htmlViewerStart = source.indexOf('function HtmlViewer(');
     const htmlViewerEnd = source.indexOf('function ImageViewer(', htmlViewerStart);
-    const bridgeCall = source.indexOf('activeCoreUiProjectSaveRequest(', htmlViewerStart);
+    const bridgeCall = source.indexOf('coreUiProjectSaveRequest(', htmlViewerStart);
     expect(liveViewerStart).toBeGreaterThan(-1);
     expect(htmlViewerStart).toBeGreaterThan(liveViewerStart);
     expect(bridgeCall).toBeGreaterThan(htmlViewerStart);
     expect(bridgeCall).toBeLessThan(htmlViewerEnd);
-    expect(source.slice(liveViewerStart, htmlViewerStart)).not.toContain('activeCoreUiProjectSaveRequest(');
-    expect(source.slice(htmlViewerStart, htmlViewerEnd)).toContain('iframeRef.current?.contentWindow');
+    expect(source.slice(liveViewerStart, htmlViewerStart)).not.toContain('coreUiProjectSaveRequest(');
+    expect(source.slice(htmlViewerStart, htmlViewerEnd)).toContain('isOurPreviewIframeSource(event.source)');
   });
 
-  it('accepts the exact request only from the active preview window', () => {
-    const activeWindow = {} as Window;
-    expect(activeCoreUiProjectSaveRequest(activeWindow, activeWindow, request)).toEqual(request);
-    expect(activeCoreUiProjectSaveRequest({} as Window, activeWindow, request)).toBeNull();
-    expect(activeCoreUiProjectSaveRequest(activeWindow, {} as Window, request)).toBeNull();
+  it('accepts the exact request after the viewer authenticates its source', () => {
+    expect(coreUiProjectSaveRequest(request)).toEqual(request);
   });
 
   it.each([
@@ -48,7 +46,17 @@ describe('live artifact project save host bridge', () => {
     ['invalid value', { ...request, settings: { ...settings, tabs: 'hot-pink' } }],
     ['extra request field', { ...request, projectId: 'attacker-project' }],
   ])('rejects %s', (_label, candidate) => {
-    const activeWindow = {} as Window;
-    expect(activeCoreUiProjectSaveRequest(activeWindow, activeWindow, candidate)).toBeNull();
+    expect(coreUiProjectSaveRequest(candidate)).toBeNull();
+  });
+
+  it('renders escaped project-template bindings while preserving project scripts', () => {
+    const rendered = renderProjectTemplatePreview(
+      '<style>:root{--field:var(--{{data.uiCustomization.field}})}</style><p>{{data.label}}</p><script>save()</script>',
+      { uiCustomization: { field: 'ocean-deep' }, label: '<Core & UI>' },
+    );
+    expect(rendered).toContain('--field:var(--ocean-deep)');
+    expect(rendered).toContain('&lt;Core &amp; UI&gt;');
+    expect(rendered).toContain('<script>save()</script>');
+    expect(rendered).not.toContain('{{data.');
   });
 });
