@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
@@ -52,6 +52,30 @@ describe('static SPA fallback', () => {
       expect(await response.text()).toContain('<div id="root"></div>');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('serves the shell when the immutable production release lives under a hidden directory', async () => {
+    const hiddenRoot = mkdtempSync(path.join(os.tmpdir(), '.core-open-design-'));
+    const hiddenStaticDir = path.join(hiddenRoot, '.release', 'apps', 'web', 'out');
+    mkdirSync(hiddenStaticDir, { recursive: true });
+    writeFileSync(path.join(hiddenStaticDir, 'index.html'), '<!doctype html><div id="root">hidden release</div>');
+    const app = express();
+    registerStaticSpaFallback(app, hiddenStaticDir);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('test server did not bind TCP');
+      const response = await fetch(`http://127.0.0.1:${address.port}/projects/project-1/conversations/conversation-2`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('hidden release');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      rmSync(hiddenRoot, { force: true, recursive: true });
     }
   });
 
