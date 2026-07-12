@@ -1,0 +1,204 @@
+.dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+}
+
+.header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.titleRow,
+.repositoryBar,
+.changeHeader,
+.changeRow {
+  display: flex;
+  align-items: center;
+}
+
+.titleRow {
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.body {
+  min-height: 180px;
+  overflow: hidden;
+}
+
+.state,
+.emptyState,
+.cleanState {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.state {
+  min-height: 160px;
+  gap: 8px;
+}
+
+.emptyState {
+  min-height: 210px;
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
+}
+
+.emptyState strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.emptyState span {
+  max-width: 360px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.emptyState button {
+  margin-top: 8px;
+}
+
+.repositoryBar {
+  min-height: 38px;
+  gap: 8px;
+  padding: 0 2px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tracking {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 12px/1.4 var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repositoryBar button {
+  margin-left: auto;
+}
+
+.notice,
+.error {
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.notice {
+  background: var(--green-bg, var(--bg-subtle));
+  color: var(--green, var(--text));
+}
+
+.error {
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+.cleanState {
+  min-height: 160px;
+  gap: 8px;
+  color: var(--green, var(--text-muted));
+  font-size: 14px;
+}
+
+.changeSection {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.changeHeader {
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.selectAll {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.changeList {
+  min-height: 110px;
+  max-height: 290px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.changeRow {
+  min-height: 36px;
+  gap: 9px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.changeRow:last-child {
+  border-bottom: 0;
+}
+
+.changeRow:hover {
+  background: var(--bg-subtle);
+}
+
+.changeRow input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.changeRow code {
+  width: 24px;
+  flex: 0 0 24px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.changeRow span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper {
+  margin: -4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.messageField {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog {
+    animation: none;
+  }
+}

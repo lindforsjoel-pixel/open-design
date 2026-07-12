@@ -3252,6 +3252,24 @@ export interface Dict {
   'designFiles.projectMenu': string;
   'designFiles.createDesignSystemFromProject': string;
   'designFiles.duplicateProject': string;
+  'designFiles.git.title': string;
+  'designFiles.git.description': string;
+  'designFiles.git.loading': string;
+  'designFiles.git.unavailable': string;
+  'designFiles.git.notRepository': string;
+  'designFiles.git.initializeDescription': string;
+  'designFiles.git.initialize': string;
+  'designFiles.git.detached': string;
+  'designFiles.git.refresh': string;
+  'designFiles.git.clean': string;
+  'designFiles.git.changes': string;
+  'designFiles.git.selectAll': string;
+  'designFiles.git.clearSelection': string;
+  'designFiles.git.truncated': string;
+  'designFiles.git.commitMessage': string;
+  'designFiles.git.commitPlaceholder': string;
+  'designFiles.git.commitSelected': string;
+  'designFiles.git.committed': string;
 
   'designFiles.previewOpen': string;
   'designFiles.previewClose': string;
