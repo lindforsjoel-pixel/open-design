@@ -1,5 +1,11 @@
 import type { Express } from 'express';
+import { CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE, type CoreUiCustomizationSaveResult } from '@open-design/contracts';
 import type { RouteDeps } from '../server-context.js';
+import {
+  defaultCoreUiProjectSaveOperations,
+  saveCoreUiProjectCustomization,
+  validateCoreUiCustomizationSaveRequest,
+} from '../live-artifacts/project-save.js';
 
 export interface RegisterLiveArtifactRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'auth' | 'liveArtifacts' | 'projectStore'> {}
 
@@ -9,7 +15,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
   const { PROJECTS_DIR } = ctx.paths;
   const { authorizeToolRequest, requestProjectOverride, requestRunOverride } = ctx.auth;
   const { createLiveArtifact, listLiveArtifacts, updateLiveArtifact, refreshLiveArtifact, emitLiveArtifactEvent, emitLiveArtifactRefreshEvent, readLiveArtifactCode, setLiveArtifactCodeHeaders, ensureLiveArtifactPreview, setLiveArtifactPreviewHeaders, getLiveArtifact, listLiveArtifactRefreshLogEntries, deleteLiveArtifact } = ctx.liveArtifacts;
-  const { updateProject } = ctx.projectStore;
+  const { getProject, resolveProjectDir, updateProject } = ctx.projectStore;
   app.get('/api/live-artifacts', async (req, res) => {
     try {
       const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined;
@@ -98,6 +104,51 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
       res.json({ refreshes });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
+    }
+  });
+
+  app.post('/api/live-artifacts/:artifactId/project-save', requireLocalDaemonRequest, async (req, res) => {
+    const suppliedRequestId = req.body && typeof req.body === 'object' && typeof req.body.requestId === 'string'
+      ? req.body.requestId
+      : '';
+    const receipt = (ok: boolean, message: string): CoreUiCustomizationSaveResult => ({
+      type: CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE,
+      version: 1,
+      requestId: suppliedRequestId,
+      ok,
+      message,
+    });
+
+    try {
+      const request = validateCoreUiCustomizationSaveRequest(req.body);
+      const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined;
+      if (!projectId) return res.status(400).json(receipt(false, 'The mounted project is unavailable.'));
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json(receipt(false, 'The mounted project was not found.'));
+      const projectDir = resolveProjectDir(PROJECTS_DIR, projectId, project.metadata);
+      const artifactId = req.params.artifactId;
+      const operations = defaultCoreUiProjectSaveOperations(
+        async () => (await getLiveArtifact({ projectsRoot: PROJECTS_DIR, projectId, artifactId })).artifact,
+        async (document) => (await updateLiveArtifact({
+          projectsRoot: PROJECTS_DIR,
+          projectId,
+          artifactId,
+          input: { document },
+        })).artifact,
+        async () => ensureLiveArtifactPreview({ projectsRoot: PROJECTS_DIR, projectId, artifactId }),
+      );
+      const result = await saveCoreUiProjectCustomization({ projectDir, request, operations });
+      emitLiveArtifactEvent({ projectId }, 'updated', result.artifact);
+      return res.status(200).json(receipt(true, 'Saved to canonical project files.'));
+    } catch (error) {
+      const isValidationError = error instanceof Error && (
+        error.message.startsWith('Save request')
+        || error.message.startsWith('Customization')
+      );
+      return res.status(isValidationError ? 400 : 500).json(receipt(
+        false,
+        isValidationError ? error.message : 'Save failed. Your selections are still unsaved; try again.',
+      ));
     }
   });
 

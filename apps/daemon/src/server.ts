@@ -2625,6 +2625,7 @@ export async function startServer({
   const uploadDeps = { upload, importUpload, handleProjectUpload };
   const projectStoreDeps = {
     getProject,
+    resolveProjectDir,
     insertProject,
     updateProject,
     dbDeleteProject,

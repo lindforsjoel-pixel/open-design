@@ -3980,6 +3980,11 @@ export function FileWorkspace({
             shareRequest={activeFileShareRequest}
             downloadRequest={activeFileDownloadRequest}
             slideNavRequest={activeFileSlideNavRequest}
+            projectSaveArtifactId={
+              activeFile.name === 'template.html' && liveArtifactEntries.length === 1
+                ? liveArtifactEntries[0]?.artifactId
+                : undefined
+            }
           />
         ) : (
           <div className="viewer-empty">

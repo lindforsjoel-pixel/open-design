@@ -73,6 +73,7 @@ import {
   LiveArtifactRefreshError,
   refreshLiveArtifact,
   restoreProjectFileVersion,
+  saveLiveArtifactProjectCustomization,
   updateDeployConfig,
   type WebDeployConfigResponse,
   type WebCloudflarePagesDeploySelection,
@@ -83,6 +84,7 @@ import {
   writeProjectTextFile,
   writeProjectTextFileDetailed,
 } from '../providers/registry';
+import { activeCoreUiProjectSaveRequest } from '../live-artifacts/project-save-bridge';
 import type { ProjectFilePreview } from '../providers/registry';
 import {
   downloadImageDataUrl,
@@ -1229,6 +1231,7 @@ interface Props {
   // Bumped nonce asking a deck preview to flip to `slideIndex` (a queued chat
   // send for this file just started processing).
   slideNavRequest?: { slideIndex: number; nonce: number } | null;
+  projectSaveArtifactId?: string;
 }
 
 // Memoized so FileWorkspace-local state churn (tab drag hover, closing a
@@ -1258,6 +1261,7 @@ export const FileViewer = memo(function FileViewer({
   shareRequest,
   downloadRequest,
   slideNavRequest,
+  projectSaveArtifactId,
 }: Props) {
   const rendererMatch = artifactRendererRegistry.resolve({
     file,
@@ -1302,6 +1306,7 @@ export const FileViewer = memo(function FileViewer({
         shareRequest={shareRequest}
         downloadRequest={downloadRequest}
         slideNavRequest={slideNavRequest}
+        projectSaveArtifactId={projectSaveArtifactId}
       />
     );
   }
@@ -5843,6 +5848,7 @@ function HtmlViewer({
   shareRequest,
   downloadRequest,
   slideNavRequest,
+  projectSaveArtifactId,
 }: {
   projectId: string;
   projectKind: TrackingProjectKind;
@@ -5864,6 +5870,7 @@ function HtmlViewer({
   shareRequest?: { nonce: number } | null;
   downloadRequest?: { nonce: number } | null;
   slideNavRequest?: { slideIndex: number; nonce: number } | null;
+  projectSaveArtifactId?: string;
 }) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
@@ -6257,6 +6264,24 @@ function HtmlViewer({
       source === srcDocPreviewIframeRef.current?.contentWindow
     );
   }, []);
+  useEffect(() => {
+    if (!projectSaveArtifactId || mode !== 'preview') return undefined;
+    const onMessage = (event: MessageEvent<unknown>) => {
+      const request = activeCoreUiProjectSaveRequest(
+        event.source,
+        iframeRef.current?.contentWindow ?? null,
+        event.data,
+      );
+      if (!request) return;
+      const replyTarget = event.source as Window;
+      void saveLiveArtifactProjectCustomization(projectId, projectSaveArtifactId, request).then((receipt) => {
+        replyTarget.postMessage(receipt, '*');
+        if (receipt.ok) void onFileSaved?.();
+      });
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [mode, onFileSaved, projectId, projectSaveArtifactId]);
   const setCommentComposerHostRef = useCallback((node: HTMLDivElement | null) => {
     setCommentComposerHost((current) => (current === node ? current : node));
   }, []);
