@@ -193,6 +193,32 @@ export interface RunArtifactBaseline {
   contended: boolean;
 }
 
+export function touchedHtmlPathsForRun(
+  baseline: RunArtifactBaseline | undefined,
+  currentProjectRoot: string,
+): string[] {
+  if (
+    !baseline ||
+    baseline.contended ||
+    path.resolve(baseline.cwd) !== path.resolve(currentProjectRoot)
+  ) {
+    return [];
+  }
+  const diff = diffRunArtifacts(
+    baseline.before,
+    snapshotProjectArtifacts(baseline.cwd),
+  );
+  return diff.touchedPaths.flatMap((filePath) => {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext !== '.html' && ext !== '.htm') return [];
+    const relativePath = path.relative(baseline.cwd, filePath);
+    if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+      return [];
+    }
+    return [relativePath];
+  });
+}
+
 // Registry of per-run baselines that flags same-cwd overlap. `remember` marks
 // both the incoming run and every still-open run sharing its cwd as contended;
 // `peek` lets pre-finish hooks inspect without consuming the baseline, and

@@ -7,7 +7,50 @@ import {
   createRunArtifactBaselines,
   diffRunArtifacts,
   snapshotProjectArtifacts,
+  touchedHtmlPathsForRun,
 } from '../src/run-artifact-fs.js';
+
+test('run-end HTML reconciliation ignores a project repointed during the run', () => {
+  const originalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-original-'));
+  const importedRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-imported-'));
+  try {
+    fs.writeFileSync(path.join(originalRoot, 'draft.html'), '<p>before</p>');
+    const baseline = {
+      cwd: originalRoot,
+      before: snapshotProjectArtifacts(originalRoot),
+      contended: false,
+    };
+    fs.writeFileSync(path.join(importedRepo, 'existing.html'), '<p>repository file</p>');
+
+    assert.deepEqual(touchedHtmlPathsForRun(baseline, importedRepo), []);
+  } finally {
+    fs.rmSync(originalRoot, { recursive: true, force: true });
+    fs.rmSync(importedRepo, { recursive: true, force: true });
+  }
+});
+
+test('run-end HTML reconciliation returns only files changed during the run', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-html-'));
+  try {
+    fs.writeFileSync(path.join(root, 'existing.html'), '<p>before</p>');
+    fs.writeFileSync(path.join(root, 'image.svg'), '<svg/>');
+    const baseline = {
+      cwd: root,
+      before: snapshotProjectArtifacts(root),
+      contended: false,
+    };
+    fs.writeFileSync(path.join(root, 'existing.html'), '<p>after</p>');
+    fs.writeFileSync(path.join(root, 'new.htm'), '<p>new</p>');
+    fs.writeFileSync(path.join(root, 'image.svg'), '<svg><path/></svg>');
+
+    assert.deepEqual(touchedHtmlPathsForRun(baseline, root).sort(), [
+      'existing.html',
+      'new.htm',
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function tmpProject(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'od-artifact-fs-'));

@@ -375,6 +375,7 @@ import {
   createRunArtifactBaselines,
   diffRunArtifacts,
   snapshotProjectArtifacts,
+  touchedHtmlPathsForRun,
 } from './run-artifact-fs.js';
 import {
   AiHtmlVersionSnapshotError,
@@ -476,7 +477,6 @@ import {
   detectEntryFile,
   ensureProject,
   ensureProjectSubdir,
-  isRunTouchedProjectFile,
   isSafeId,
   listFiles,
   listProjectFolders,
@@ -5823,12 +5823,6 @@ export async function startServer({
       };
     }
 
-    // `runStartTimeMs` is consumed by the run-end artifact-manifest
-    // reconciler (#2893 / #3110) to skip artifacts whose mtime predates
-    // this run. The original main-side hunk also re-declared `const send`
-    // here; on this branch `send` was hoisted into the AMR preflight
-    // earlier, so we keep only the new `runStartTimeMs` declaration.
-    const runStartTimeMs = Date.now();
     const inactivityTimeoutMs = resolveChatRunInactivityTimeoutMs(def.inactivityTimeoutMs);
     const artifactQuietPeriodMs = resolveChatRunArtifactQuietPeriodMs();
     // Grace before the inactivity watchdog escalates a stalled child from
@@ -7530,32 +7524,23 @@ export async function startServer({
           }
         }
       }
-      // Reconcile any HTML artifacts that were written during this run
-      // without a manifest sidecar (e.g. agent used write_file instead of
-      // create_artifact, or the run terminated between HTML write and
-      // sidecar write). Only files modified after the run started are
-      // touched — pre-existing HTML in imported-folder projects must not
-      // receive spurious manifests. Best-effort; must not block finalisation.
-      // See issue #2893.
+      // Reconcile only HTML artifacts proven changed against this run's
+      // starting snapshot. A project can be repointed while an agent is still
+      // running; using the current folder's mtimes in that case would stamp
+      // every recently checked-out HTML file with a runtime sidecar.
+      // Best-effort; must not block finalisation. See issue #2893.
       if (run.projectId) {
         (async () => {
           try {
             const project = getProject(db, run.projectId);
-            const files = await listFiles(PROJECTS_DIR, run.projectId, {
-              metadata: project?.metadata,
-            });
             const dir = resolveProjectDir(PROJECTS_DIR, run.projectId, project?.metadata);
-            for (const f of files) {
-              const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase();
-              if (ext !== '.html' && ext !== '.htm') continue;
+            const names = touchedHtmlPathsForRun(runArtifactBaselines.peek(run.id), dir);
+            for (const name of names) {
               try {
-                const filePath = path.join(dir, f.name);
-                const st = await fs.promises.stat(filePath);
-                if (!isRunTouchedProjectFile(st.mtimeMs, runStartTimeMs)) continue;
                 await reconcileHtmlArtifactManifest(
                   PROJECTS_DIR,
                   run.projectId,
-                  f.name,
+                  name,
                   project?.metadata,
                 );
               } catch { /* per-file best-effort */ }
