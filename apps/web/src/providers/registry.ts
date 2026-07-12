@@ -1584,6 +1584,41 @@ export async function refreshLiveArtifact(
   return (await resp.json()) as LiveArtifactRefreshResult;
 }
 
+export async function saveLiveArtifactProjectCustomization(
+  projectId: string,
+  artifactId: string,
+  request: import('@open-design/contracts').CoreUiCustomizationSaveRequest,
+): Promise<import('@open-design/contracts').CoreUiCustomizationSaveResult> {
+  const fallback = (message: string): import('@open-design/contracts').CoreUiCustomizationSaveResult => ({
+    type: 'od:live-artifact-project-save-result',
+    version: 1,
+    requestId: request.requestId,
+    ok: false,
+    message,
+  });
+  try {
+    const response = await fetch(
+      `/api/live-artifacts/${encodeURIComponent(artifactId)}/project-save?projectId=${encodeURIComponent(projectId)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
+    const result = await response.json() as import('@open-design/contracts').CoreUiCustomizationSaveResult;
+    if (
+      result.type !== 'od:live-artifact-project-save-result'
+      || result.version !== 1
+      || result.requestId !== request.requestId
+      || typeof result.ok !== 'boolean'
+      || typeof result.message !== 'string'
+    ) return fallback('Save failed. Your selections are still unsaved; try again.');
+    return result;
+  } catch {
+    return fallback('Save failed. Your selections are still unsaved; try again.');
+  }
+}
+
 export async function fetchLiveArtifactRefreshes(
   projectId: string,
   artifactId: string,
