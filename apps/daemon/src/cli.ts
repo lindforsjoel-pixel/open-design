@@ -5737,6 +5737,10 @@ async function runProject(args) {
   od project open-in <id> --editor <slug> Open the project's working directory
                                           in the chosen editor (cursor, zed,
                                           vscode, finder, terminal, …).
+  od project git status <id>              Show project-scoped branch and changes.
+  od project git init <id>                Initialize Git in the project folder.
+  od project git commit <id> <path...> --message "<subject>"
+                                          Commit only the selected project files.
   od project handoff <id> --conversation <id> --api-key <key> --model <model>
                     [--base-url <url>] [--max-tokens <n>]
                     Synthesize a resume-conversation handoff prompt.
@@ -5976,6 +5980,48 @@ Common options:
       }
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       console.log(`[project] opened ${id} in ${editor} (${data.path ?? ''})`);
+      return;
+    }
+    case 'git': {
+      const parts = positionalArgs(rest, PROJECT_STRING_FLAGS);
+      const action = parts[0];
+      const id = parts[1];
+      if (!action || !id || !['status', 'init', 'commit'].includes(action)) {
+        console.error('Usage: od project git <status|init|commit> <id> [path...] [--message "<subject>"] [--json]');
+        process.exit(2);
+      }
+      const route = `/api/projects/${encodeURIComponent(id)}/git/${action}`;
+      const request = action === 'status'
+        ? undefined
+        : {
+            method: 'POST',
+            ...(action === 'commit'
+              ? {
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ message: flags.message, paths: parts.slice(2) }),
+                }
+              : {}),
+          };
+      const resp = await fetch(`${base}${route}`, request);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const status = action === 'commit' ? data.status : data;
+      if (action === 'commit') console.log(`[git] committed ${data.commit?.shortHash ?? '-'} ${data.commit?.subject ?? ''}`);
+      else if (action === 'init') console.log(`[git] initialized ${status.repositoryRoot ?? status.projectRoot}`);
+      if (!status.repository) {
+        console.log(status.available ? 'Not a Git repository.' : (status.error ?? 'Git is unavailable.'));
+        return;
+      }
+      const tracking = status.upstream
+        ? ` -> ${status.upstream} (+${status.ahead}/-${status.behind})`
+        : '';
+      console.log(`${status.branch ?? '(detached)'}${tracking}`);
+      if (status.changes.length === 0) console.log('Working tree clean.');
+      else for (const change of status.changes) {
+        console.log(`${change.indexStatus}${change.worktreeStatus}\t${change.path}`);
+      }
+      if (status.truncated) console.log('… additional changes omitted');
       return;
     }
     default:
