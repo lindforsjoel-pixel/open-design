@@ -159,7 +159,7 @@ export async function saveCoreUiProjectCustomization(
   ];
   const previousRegisteredArtifact = await options.operations.getLiveArtifact();
   const writtenIndexes: number[] = [];
-  let registeredArtifactWasUpdated = false;
+  let registeredArtifactMayHaveChanged = false;
 
   try {
     for (let index = 0; index < filePaths.length; index += 1) {
@@ -168,8 +168,8 @@ export async function saveCoreUiProjectCustomization(
     }
 
     const canonicalDocument = (nextValues[2] as JsonObject).document as LiveArtifact['document'];
+    registeredArtifactMayHaveChanged = true;
     await options.operations.updateLiveArtifact(canonicalDocument);
-    registeredArtifactWasUpdated = true;
     const preview = await options.operations.ensureLiveArtifactPreview();
     if (preview.artifact.document.dataJson.uiCustomization == null || preview.html.length === 0) {
       throw new Error('Regenerated preview was not available.');
@@ -177,7 +177,7 @@ export async function saveCoreUiProjectCustomization(
     return { request, artifact: preview.artifact, html: preview.html };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
-    if (registeredArtifactWasUpdated) {
+    if (registeredArtifactMayHaveChanged) {
       await options.operations.updateLiveArtifact(previousRegisteredArtifact.document).catch((rollbackError) => rollbackErrors.push(rollbackError));
       await options.operations.ensureLiveArtifactPreview().catch((rollbackError) => rollbackErrors.push(rollbackError));
     }

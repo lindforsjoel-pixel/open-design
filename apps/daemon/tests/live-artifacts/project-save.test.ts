@@ -1,10 +1,20 @@
 import type { CoreUiCustomizationSaveRequest, LiveArtifact } from '@open-design/contracts';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  defaultCoreUiProjectSaveOperations,
   saveCoreUiProjectCustomization,
   type CoreUiProjectSaveOperations,
 } from '../../src/live-artifacts/project-save.js';
+import {
+  createLiveArtifact,
+  ensureLiveArtifactPreview,
+  getLiveArtifact,
+  updateLiveArtifact,
+} from '../../src/live-artifacts/store.js';
 
 const request: CoreUiCustomizationSaveRequest = {
   type: 'od:live-artifact-project-save-request',
@@ -116,6 +126,69 @@ describe('Core UI canonical project save', () => {
       panelHeaders: 'mineral-blue', data: 'clouded-steel',
     });
     expect(state.events.at(-1)).toBe('preview');
+  });
+
+  it('updates and regenerates through the real live-artifact store while the visible project template remains interactive', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-core-ui-save-integration-'));
+    const projectsRoot = path.join(root, 'projects');
+    const projectDir = path.join(root, 'mounted-core-ui');
+    const projectId = 'core-ui-project';
+    const registeredTemplate = '<!doctype html><style>:root{--field:{{data.uiCustomization.field}}}</style><main>Core UI</main>';
+    const visibleProjectTemplate = '<!doctype html><button id="save">Save</button><script>parent.postMessage({type:"od:live-artifact-project-save-request"},"*")</script>';
+    const oldCustomization = {
+      field: 'ocean-deep', sidebar: 'ocean-deep', tabs: 'ocean-deep', selected: 'ocean-deep',
+      panelHeaders: 'ocean-deep', data: 'ocean-deep',
+    };
+    try {
+      await mkdir(projectDir, { recursive: true });
+      const document = {
+        format: 'html_template_v1' as const,
+        templatePath: 'template.html' as const,
+        generatedPreviewPath: 'index.html' as const,
+        dataPath: 'data.json' as const,
+        dataJson: { meta: { product: 'Core UI' }, uiCustomization: oldCustomization },
+      };
+      const canonicalArtifact = { document };
+      await Promise.all([
+        writeFile(path.join(projectDir, 'data.json'), JSON.stringify(document.dataJson), 'utf8'),
+        writeFile(path.join(projectDir, 'live-source.json'), JSON.stringify(document.dataJson), 'utf8'),
+        writeFile(path.join(projectDir, 'artifact.json'), JSON.stringify(canonicalArtifact), 'utf8'),
+        writeFile(path.join(projectDir, 'template.html'), visibleProjectTemplate, 'utf8'),
+      ]);
+      const created = await createLiveArtifact({
+        projectsRoot,
+        projectId,
+        input: {
+          title: 'Core UI — Responsive Shell',
+          slug: 'core-ui-responsive-shell',
+          preview: { type: 'html', entry: 'index.html' },
+          document,
+        },
+        templateHtml: registeredTemplate,
+      });
+      const artifactId = created.artifact.id;
+      const operations = defaultCoreUiProjectSaveOperations(
+        async () => (await getLiveArtifact({ projectsRoot, projectId, artifactId })).artifact,
+        async (nextDocument) => (await updateLiveArtifact({
+          projectsRoot, projectId, artifactId, input: { document: nextDocument },
+        })).artifact,
+        async () => ensureLiveArtifactPreview({ projectsRoot, projectId, artifactId }),
+      );
+
+      const result = await saveCoreUiProjectCustomization({ projectDir, request, operations });
+
+      expect(result.html).toContain('--field:carbon-blue');
+      expect(await readFile(path.join(projectDir, 'template.html'), 'utf8')).toBe(visibleProjectTemplate);
+      expect(await readFile(created.paths.templateHtmlPath, 'utf8')).toBe(registeredTemplate);
+      expect(await readFile(created.paths.templateHtmlPath, 'utf8')).not.toContain('<script');
+      const persisted = await getLiveArtifact({ projectsRoot, projectId, artifactId });
+      expect(persisted.artifact.document.dataJson.uiCustomization).toEqual({
+        field: 'carbon-blue', sidebar: 'ocean-deep', tabs: 'wet-slate', selected: 'storm-slate',
+        panelHeaders: 'mineral-blue', data: 'clouded-steel',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it.each([2, 3])('restores earlier files when canonical write %i fails', async (failedWrite) => {
