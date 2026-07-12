@@ -29,6 +29,9 @@ export function registerStaticSpaFallback(app: Express, staticDir: string): void
   app.get('/*splat', (req, res, next) => {
     const indexPath = resolveStaticSpaFallbackPath(req, staticDir);
     if (indexPath == null) return next();
-    res.sendFile(indexPath);
+    // Production releases live below a hidden directory. The path is resolved
+    // exclusively from the configured static root, so allowing dot-path
+    // traversal here does not expose caller-selected files.
+    res.sendFile(indexPath, { dotfiles: 'allow' });
   });
 }

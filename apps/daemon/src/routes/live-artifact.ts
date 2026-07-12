@@ -107,7 +107,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
     }
   });
 
-  app.post('/api/live-artifacts/:artifactId/project-save', requireLocalDaemonRequest, async (req, res) => {
+  app.post('/api/live-artifacts/:artifactId/project-save', async (req, res) => {
     const suppliedRequestId = req.body && typeof req.body === 'object' && typeof req.body.requestId === 'string'
       ? req.body.requestId
       : '';
