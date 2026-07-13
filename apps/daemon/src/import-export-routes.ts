@@ -215,7 +215,9 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
         ...preservedMeta,
         kind: existingMeta.kind ?? 'prototype',
         baseDir: normalizedPath,
-        importedFrom: 'folder' as const,
+        importedFrom: existingMeta.importedFrom === 'design-system'
+          ? 'design-system' as const
+          : 'folder' as const,
         entryFile,
         ...(normalizedOrchestratorWorkspace
           ? { orchestratorWorkspace: normalizedOrchestratorWorkspace }
