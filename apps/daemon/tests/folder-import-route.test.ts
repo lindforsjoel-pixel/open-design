@@ -363,6 +363,48 @@ describe('POST /api/import/folder', () => {
     expect(body.error?.message).toMatch(/unsupported field: source_reference/i);
   });
 
+  it('preserves design-system provenance when replacing its working directory', async () => {
+    const projectId = `design-system-${randomBytes(8).toString('hex')}`;
+    const createResp = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: projectId,
+        name: 'Design system fixture',
+        metadata: {
+          kind: 'other',
+          importedFrom: 'design-system',
+          entryFile: 'DESIGN.md',
+        },
+      }),
+    });
+    expect(createResp.status).toBe(200);
+
+    const folder = makeFolder();
+    await writeFile(path.join(folder, 'DESIGN.md'), '# Design system');
+    await writeFile(path.join(folder, 'index.html'), '<!doctype html>');
+    const replaceResp = await fetch(`${baseUrl}/api/projects/${projectId}/working-dir`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseDir: folder }),
+    });
+    expect(replaceResp.status).toBe(200);
+    const replaceBody = (await replaceResp.json()) as {
+      project: {
+        metadata?: {
+          kind?: string;
+          importedFrom?: string;
+          baseDir?: string;
+        };
+      };
+    };
+    expect(replaceBody.project.metadata).toMatchObject({
+      kind: 'other',
+      importedFrom: 'design-system',
+      baseDir: await realpath(folder),
+    });
+  });
+
   it('clears scratch provenance when replacing a working directory without new provenance', async () => {
     const scratchFolder = makeFolder();
     await writeFile(path.join(scratchFolder, 'index.html'), '<!doctype html>');
