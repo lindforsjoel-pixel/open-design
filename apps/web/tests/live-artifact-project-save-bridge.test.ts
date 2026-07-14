@@ -1,8 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 
-import { coreUiProjectSaveRequest } from '../src/live-artifacts/project-save-bridge';
+import {
+  coreUiProjectSaveRequest,
+  coreUiProjectSaveValidationReceipt,
+} from '../src/live-artifacts/project-save-bridge';
 import { renderProjectTemplatePreview } from '../src/live-artifacts/project-template-preview';
+
+const roles = ['field', 'sidebar', 'tabs', 'selected', 'headers', 'data'] as const;
+const newPaletteCases = roles.flatMap((role) => (
+  ['ocean', 'ocean-raised'] as const
+).map((value) => [role, value] as const));
+const originalPaletteValues = [
+  'ocean-deep',
+  'carbon-blue',
+  'wet-slate',
+  'storm-slate',
+  'muted-fjord',
+  'mineral-blue',
+  'clouded-steel',
+  'harbor-steel',
+  'silvered-slate',
+] as const;
+const disallowedPaletteValues = ['ocean-line', 'teal', 'amber', 'action-blue', 'success'] as const;
 
 const settings = {
   field: 'carbon-blue',
@@ -38,6 +58,37 @@ describe('live artifact project save host bridge', () => {
 
   it('accepts the exact request after the viewer authenticates its source', () => {
     expect(coreUiProjectSaveRequest(request)).toEqual(request);
+  });
+
+  it.each(newPaletteCases)('accepts %s role with governed value %s', (role, value) => {
+    const candidate = { ...request, settings: { ...settings, [role]: value } };
+    expect(coreUiProjectSaveRequest(candidate)).toEqual(candidate);
+  });
+
+  it.each(originalPaletteValues)('keeps original governed value %s valid', (value) => {
+    const candidate = { ...request, settings: { ...settings, field: value } };
+    expect(coreUiProjectSaveRequest(candidate)).toEqual(candidate);
+  });
+
+  it.each(disallowedPaletteValues)('rejects non-governed value %s', (value) => {
+    const candidate = { ...request, settings: { ...settings, field: value } };
+    expect(coreUiProjectSaveRequest(candidate)).toBeNull();
+    expect(coreUiProjectSaveValidationReceipt(candidate)).toEqual({
+      type: 'od:live-artifact-project-save-result',
+      version: 1,
+      requestId: request.requestId,
+      ok: false,
+      message: 'Customization settings are invalid.',
+    });
+  });
+
+  it('only creates a validation receipt for a recognized request with a matching id', () => {
+    expect(coreUiProjectSaveValidationReceipt(request)).toBeNull();
+    expect(coreUiProjectSaveValidationReceipt({ type: 'unrelated', requestId: request.requestId })).toBeNull();
+    expect(coreUiProjectSaveValidationReceipt({
+      ...request,
+      settings: { ...settings, tabs: 'unknown-color' },
+    })).toMatchObject({ requestId: request.requestId, ok: false });
   });
 
   it.each([

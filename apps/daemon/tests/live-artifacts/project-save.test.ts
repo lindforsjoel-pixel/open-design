@@ -8,6 +8,7 @@ import {
   defaultCoreUiProjectSaveOperations,
   saveCoreUiProjectCustomization,
   type CoreUiProjectSaveOperations,
+  validateCoreUiCustomizationSaveRequest,
 } from '../../src/live-artifacts/project-save.js';
 import {
   createLiveArtifact,
@@ -22,14 +23,39 @@ const request: CoreUiCustomizationSaveRequest = {
   requestId: 'save-1',
   kind: 'core-ui-customization',
   settings: {
-    field: 'carbon-blue',
-    sidebar: 'ocean-deep',
+    field: 'ocean',
+    sidebar: 'ocean-raised',
     tabs: 'wet-slate',
     selected: 'storm-slate',
     headers: 'mineral-blue',
     data: 'clouded-steel',
   },
 };
+
+const roleNames = ['field', 'sidebar', 'tabs', 'selected', 'headers', 'data'] as const;
+const canonicalRoleNames = {
+  field: 'field',
+  sidebar: 'sidebar',
+  tabs: 'tabs',
+  selected: 'selected',
+  headers: 'panelHeaders',
+  data: 'data',
+} as const;
+const newPaletteCases = roleNames.flatMap((role) => (
+  ['ocean', 'ocean-raised'] as const
+).map((value) => [role, value] as const));
+const originalPaletteValues = [
+  'ocean-deep',
+  'carbon-blue',
+  'wet-slate',
+  'storm-slate',
+  'muted-fjord',
+  'mineral-blue',
+  'clouded-steel',
+  'harbor-steel',
+  'silvered-slate',
+] as const;
+const disallowedPaletteValues = ['ocean-line', 'teal', 'amber', 'action-blue', 'success'] as const;
 
 function artifact(dataJson: Record<string, unknown>): LiveArtifact {
   return {
@@ -109,6 +135,42 @@ describe('Core UI canonical project save', () => {
     for (const [filePath, contents] of state.originals) expect(state.files.get(filePath)).toBe(contents);
   });
 
+  it.each(disallowedPaletteValues)('rejects non-governed value %s', (value) => {
+    expect(() => validateCoreUiCustomizationSaveRequest({
+      ...request,
+      settings: { ...request.settings, field: value },
+    })).toThrow('Customization value for field is invalid.');
+  });
+
+  it.each(originalPaletteValues)('keeps original governed value %s valid', (value) => {
+    const candidate: CoreUiCustomizationSaveRequest = {
+      ...request,
+      settings: { ...request.settings, field: value },
+    };
+    expect(validateCoreUiCustomizationSaveRequest(candidate)).toEqual(candidate);
+  });
+
+  it.each(newPaletteCases)('saves governed role %s with value %s', async (role, value) => {
+    const state = harness();
+    const candidate: CoreUiCustomizationSaveRequest = {
+      ...request,
+      requestId: `save-${role}-${value}`,
+      settings: { ...request.settings, [role]: value },
+    };
+    expect(validateCoreUiCustomizationSaveRequest(candidate)).toEqual(candidate);
+
+    await saveCoreUiProjectCustomization({ projectDir: '/project', request: candidate, operations: state.operations });
+
+    const data = JSON.parse(state.files.get('/project/data.json')!);
+    const source = JSON.parse(state.files.get('/project/live-source.json')!);
+    const sourceArtifact = JSON.parse(state.files.get('/project/artifact.json')!);
+    const registered = state.registered().document.dataJson.uiCustomization;
+    expect(data.uiCustomization).toEqual(source.uiCustomization);
+    expect(data.uiCustomization).toEqual(sourceArtifact.document.dataJson.uiCustomization);
+    expect(data.uiCustomization).toEqual(registered);
+    expect(data.uiCustomization[canonicalRoleNames[role]]).toBe(value);
+  });
+
   it('writes identical customization to all canonical files before confirming the preview', async () => {
     const state = harness();
     await saveCoreUiProjectCustomization({ projectDir: '/project', request, operations: state.operations });
@@ -121,8 +183,9 @@ describe('Core UI canonical project save', () => {
     expect(sourceArtifact.keep).toBe('artifact');
     expect(data.uiCustomization).toEqual(source.uiCustomization);
     expect(data.uiCustomization).toEqual(sourceArtifact.document.dataJson.uiCustomization);
+    expect(data.uiCustomization).toEqual(state.registered().document.dataJson.uiCustomization);
     expect(data.uiCustomization).toEqual({
-      field: 'carbon-blue', sidebar: 'ocean-deep', tabs: 'wet-slate', selected: 'storm-slate',
+      field: 'ocean', sidebar: 'ocean-raised', tabs: 'wet-slate', selected: 'storm-slate',
       panelHeaders: 'mineral-blue', data: 'clouded-steel',
     });
     expect(state.events.at(-1)).toBe('preview');
@@ -177,13 +240,13 @@ describe('Core UI canonical project save', () => {
 
       const result = await saveCoreUiProjectCustomization({ projectDir, request, operations });
 
-      expect(result.html).toContain('--field:carbon-blue');
+      expect(result.html).toContain('--field:ocean');
       expect(await readFile(path.join(projectDir, 'template.html'), 'utf8')).toBe(visibleProjectTemplate);
       expect(await readFile(created.paths.templateHtmlPath, 'utf8')).toBe(registeredTemplate);
       expect(await readFile(created.paths.templateHtmlPath, 'utf8')).not.toContain('<script');
       const persisted = await getLiveArtifact({ projectsRoot, projectId, artifactId });
       expect(persisted.artifact.document.dataJson.uiCustomization).toEqual({
-        field: 'carbon-blue', sidebar: 'ocean-deep', tabs: 'wet-slate', selected: 'storm-slate',
+        field: 'ocean', sidebar: 'ocean-raised', tabs: 'wet-slate', selected: 'storm-slate',
         panelHeaders: 'mineral-blue', data: 'clouded-steel',
       });
     } finally {

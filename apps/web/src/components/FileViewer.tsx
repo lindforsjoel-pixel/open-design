@@ -86,7 +86,10 @@ import {
   writeProjectTextFile,
   writeProjectTextFileDetailed,
 } from '../providers/registry';
-import { coreUiProjectSaveRequest } from '../live-artifacts/project-save-bridge';
+import {
+  coreUiProjectSaveRequest,
+  coreUiProjectSaveValidationReceipt,
+} from '../live-artifacts/project-save-bridge';
 import { renderProjectTemplatePreview } from '../live-artifacts/project-template-preview';
 import type { ProjectFilePreview } from '../providers/registry';
 import {
@@ -6273,8 +6276,12 @@ function HtmlViewer({
     const onMessage = (event: MessageEvent<unknown>) => {
       if (!isOurPreviewIframeSource(event.source)) return;
       const request = coreUiProjectSaveRequest(event.data);
-      if (!request) return;
       const replyTarget = event.source as Window;
+      if (!request) {
+        const validationReceipt = coreUiProjectSaveValidationReceipt(event.data);
+        if (validationReceipt) replyTarget.postMessage(validationReceipt, '*');
+        return;
+      }
       void saveLiveArtifactProjectCustomization(projectId, projectSaveArtifactId, request).then((receipt) => {
         replyTarget.postMessage(receipt, '*');
         if (receipt.ok) void onFileSaved?.();

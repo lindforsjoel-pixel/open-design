@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import type { CoreUiCustomizationSaveRequest } from '@open-design/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FileViewer } from '../../src/components/FileViewer';
@@ -41,10 +42,10 @@ describe('Core UI rendered project viewer save', () => {
         return new Response(JSON.stringify({ deployments: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       if (url.includes('/project-save') && init?.method === 'POST') {
-        const body = JSON.parse(String(init.body)) as {
-          requestId: string;
-          settings: Record<string, string>;
-        };
+        const body = JSON.parse(String(init.body)) as Pick<
+          CoreUiCustomizationSaveRequest,
+          'requestId' | 'settings'
+        >;
         const next = {
           field: body.settings.field,
           sidebar: body.settings.sidebar,
@@ -109,6 +110,7 @@ describe('Core UI rendered project viewer save', () => {
     });
     const previewWindow = frame.contentWindow;
     if (!previewWindow) throw new Error('rendered preview window is unavailable');
+    const postMessageSpy = vi.spyOn(previewWindow, 'postMessage');
     window.dispatchEvent(new MessageEvent('message', {
       source: previewWindow,
       data: {
@@ -117,8 +119,8 @@ describe('Core UI rendered project viewer save', () => {
         requestId: 'viewer-save-1',
         kind: 'core-ui-customization',
         settings: {
-          field: 'ocean-deep',
-          sidebar: 'mineral-blue',
+          field: 'ocean',
+          sidebar: 'ocean-raised',
           tabs: 'harbor-steel',
           selected: 'silvered-slate',
           headers: 'muted-fjord',
@@ -131,15 +133,57 @@ describe('Core UI rendered project viewer save', () => {
       expect.stringContaining('/live-artifacts/la-core-ui/project-save'),
       expect.objectContaining({ method: 'POST' }),
     ));
+    await waitFor(() => expect(postMessageSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'od:live-artifact-project-save-result',
+        requestId: 'viewer-save-1',
+        ok: true,
+      }),
+      '*',
+    ));
     expect(canonical.data.uiCustomization).toEqual(canonical.liveSource.uiCustomization);
     expect(canonical.data.uiCustomization).toEqual(canonical.artifact.document.dataJson.uiCustomization);
     expect(canonical.data.uiCustomization).toEqual({
-      field: 'ocean-deep',
-      sidebar: 'mineral-blue',
+      field: 'ocean',
+      sidebar: 'ocean-raised',
       tabs: 'harbor-steel',
       selected: 'silvered-slate',
       panelHeaders: 'muted-fjord',
       data: 'clouded-steel',
     });
+
+    const saveCallsBeforeInvalid = fetchMock.mock.calls.filter(([input, init]) => (
+      String(input).includes('/project-save') && init?.method === 'POST'
+    )).length;
+    postMessageSpy.mockClear();
+    window.dispatchEvent(new MessageEvent('message', {
+      source: previewWindow,
+      data: {
+        type: 'od:live-artifact-project-save-request',
+        version: 1,
+        requestId: 'viewer-save-invalid',
+        kind: 'core-ui-customization',
+        settings: {
+          field: 'ocean-line',
+          sidebar: 'ocean-raised',
+          tabs: 'harbor-steel',
+          selected: 'silvered-slate',
+          headers: 'muted-fjord',
+          data: 'clouded-steel',
+        },
+      },
+    }));
+    await waitFor(() => expect(postMessageSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'od:live-artifact-project-save-result',
+        requestId: 'viewer-save-invalid',
+        ok: false,
+        message: 'Customization settings are invalid.',
+      }),
+      '*',
+    ));
+    expect(fetchMock.mock.calls.filter(([input, init]) => (
+      String(input).includes('/project-save') && init?.method === 'POST'
+    ))).toHaveLength(saveCallsBeforeInvalid);
   });
 });

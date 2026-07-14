@@ -1,11 +1,15 @@
 import {
   CORE_UI_CUSTOMIZATION_SAVE_REQUEST_TYPE,
+  CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE,
   type CoreUiCustomizationSaveRequest,
+  type CoreUiCustomizationSaveResult,
 } from '@open-design/contracts';
 
 const ROLES = ['field', 'sidebar', 'tabs', 'selected', 'headers', 'data'] as const;
 const PALETTE_VALUES = new Set([
   'ocean-deep',
+  'ocean',
+  'ocean-raised',
   'carbon-blue',
   'wet-slate',
   'storm-slate',
@@ -36,4 +40,22 @@ export function coreUiProjectSaveRequest(value: unknown): CoreUiCustomizationSav
   if (Object.keys(settings).sort().join(',') !== [...ROLES].sort().join(',')) return null;
   if (ROLES.some((role) => typeof settings[role] !== 'string' || !PALETTE_VALUES.has(settings[role]))) return null;
   return value as unknown as CoreUiCustomizationSaveRequest;
+}
+
+export function coreUiProjectSaveValidationReceipt(value: unknown): CoreUiCustomizationSaveResult | null {
+  if (
+    !isPlainObject(value)
+    || value.type !== CORE_UI_CUSTOMIZATION_SAVE_REQUEST_TYPE
+    || typeof value.requestId !== 'string'
+    || value.requestId.trim().length === 0
+    || value.requestId.length > 200
+    || coreUiProjectSaveRequest(value)
+  ) return null;
+  return {
+    type: CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE,
+    version: 1,
+    requestId: value.requestId,
+    ok: false,
+    message: 'Customization settings are invalid.',
+  };
 }

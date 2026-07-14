@@ -12,6 +12,8 @@ import {
 const ROLE_NAMES = ['field', 'sidebar', 'tabs', 'selected', 'headers', 'data'] as const;
 const PALETTE_VALUES = new Set([
   'ocean-deep',
+  'ocean',
+  'ocean-raised',
   'carbon-blue',
   'wet-slate',
   'storm-slate',
