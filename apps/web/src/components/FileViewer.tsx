@@ -6,6 +6,7 @@ import {
   buildSocialSharePayload,
   OPEN_DESIGN_GITHUB_REPO_URL,
   type BoundedJsonObject,
+  type CoreUiCustomizationRevision,
   type ProjectFileVersion,
   type SocialShareRequest,
   type SocialShareResponse,
@@ -54,6 +55,7 @@ import {
   fetchLiveArtifact,
   fetchLiveArtifactCode,
   fetchLiveArtifactRefreshes,
+  fetchLiveArtifactProjectSaveState,
   checkDeploymentLink,
   CLOUDFLARE_PAGES_PROVIDER_ID,
   createSocialSharePayload,
@@ -87,7 +89,9 @@ import {
   writeProjectTextFileDetailed,
 } from '../providers/registry';
 import {
+  coreUiProjectSaveLegacyReceipt,
   coreUiProjectSaveRequest,
+  coreUiProjectSaveRevisionUnavailableReceipt,
   coreUiProjectSaveValidationReceipt,
 } from '../live-artifacts/project-save-bridge';
 import { renderProjectTemplatePreview } from '../live-artifacts/project-template-preview';
@@ -6271,25 +6275,50 @@ function HtmlViewer({
       source === srcDocPreviewIframeRef.current?.contentWindow
     );
   }, []);
+  const projectSaveIdentity = `${projectId}\0${projectSaveArtifactId ?? ''}`;
+  const projectSaveRevisionRef = useRef<{
+    identity: string;
+    revision: CoreUiCustomizationRevision | null;
+  }>({ identity: projectSaveIdentity, revision: null });
+  useEffect(() => {
+    projectSaveRevisionRef.current = { identity: projectSaveIdentity, revision: null };
+    if (!projectSaveArtifactId) return undefined;
+    let cancelled = false;
+    void fetchLiveArtifactProjectSaveState(projectId, projectSaveArtifactId).then((state) => {
+      if (!cancelled && projectSaveRevisionRef.current.identity === projectSaveIdentity) {
+        projectSaveRevisionRef.current = { identity: projectSaveIdentity, revision: state?.revision ?? null };
+      }
+    });
+    return () => { cancelled = true; };
+  }, [projectId, projectSaveArtifactId, projectSaveIdentity]);
   useEffect(() => {
     if (!projectSaveArtifactId || mode !== 'preview') return undefined;
     const onMessage = (event: MessageEvent<unknown>) => {
       if (!isOurPreviewIframeSource(event.source)) return;
-      const request = coreUiProjectSaveRequest(event.data);
+      const revisionState = projectSaveRevisionRef.current;
+      const request = coreUiProjectSaveRequest(
+        event.data,
+        revisionState.identity === projectSaveIdentity ? revisionState.revision : null,
+      );
       const replyTarget = event.source as Window;
       if (!request) {
-        const validationReceipt = coreUiProjectSaveValidationReceipt(event.data);
-        if (validationReceipt) replyTarget.postMessage(validationReceipt, '*');
+        const failureReceipt = coreUiProjectSaveValidationReceipt(event.data, revisionState.revision)
+          ?? coreUiProjectSaveRevisionUnavailableReceipt(event.data);
+        if (failureReceipt) replyTarget.postMessage(failureReceipt, '*');
         return;
       }
       void saveLiveArtifactProjectCustomization(projectId, projectSaveArtifactId, request).then((receipt) => {
-        replyTarget.postMessage(receipt, '*');
+        if (projectSaveRevisionRef.current.identity !== projectSaveIdentity) return;
+        if (receipt.revision) {
+          projectSaveRevisionRef.current = { identity: projectSaveIdentity, revision: receipt.revision };
+        }
+        replyTarget.postMessage(coreUiProjectSaveLegacyReceipt(receipt), '*');
         if (receipt.ok) void onFileSaved?.();
       });
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [isOurPreviewIframeSource, mode, onFileSaved, projectId, projectSaveArtifactId]);
+  }, [isOurPreviewIframeSource, mode, onFileSaved, projectId, projectSaveArtifactId, projectSaveIdentity]);
   const setCommentComposerHostRef = useCallback((node: HTMLDivElement | null) => {
     setCommentComposerHost((current) => (current === node ? current : node));
   }, []);

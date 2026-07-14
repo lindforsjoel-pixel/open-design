@@ -147,34 +147,6 @@ export interface LiveArtifactRefreshResponse {
   };
 }
 
-export const CORE_UI_CUSTOMIZATION_SAVE_REQUEST_TYPE = 'od:live-artifact-project-save-request' as const;
-export const CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE = 'od:live-artifact-project-save-result' as const;
-
-export interface CoreUiCustomizationSaveSettings {
-  field: string;
-  sidebar: string;
-  tabs: string;
-  selected: string;
-  headers: string;
-  data: string;
-}
-
-export interface CoreUiCustomizationSaveRequest {
-  type: typeof CORE_UI_CUSTOMIZATION_SAVE_REQUEST_TYPE;
-  version: 1;
-  requestId: string;
-  kind: 'core-ui-customization';
-  settings: CoreUiCustomizationSaveSettings;
-}
-
-export interface CoreUiCustomizationSaveResult {
-  type: typeof CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE;
-  version: 1;
-  requestId: string;
-  ok: boolean;
-  message: string;
-}
-
 export type LiveArtifactRefreshStepStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
 
 export interface LiveArtifactRefreshErrorRecord {

@@ -1,11 +1,22 @@
-import type { CoreUiCustomizationSaveRequest, LiveArtifact } from '@open-design/contracts';
+import {
+  CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+  CORE_UI_CUSTOMIZATION_SAVE_PALETTE_VALUES,
+  CORE_UI_CUSTOMIZATION_SAVE_ROLE_NAMES,
+  type CoreUiCustomizationSaveRequest,
+  type CoreUiCustomizationSaveSettings,
+  type LiveArtifact,
+} from '@open-design/contracts';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CoreUiProjectSaveConflictError,
+  CoreUiProjectSaveTransactionError,
+  coreUiCustomizationRevision,
   defaultCoreUiProjectSaveOperations,
+  readCoreUiProjectCustomizationState,
   saveCoreUiProjectCustomization,
   type CoreUiProjectSaveOperations,
   validateCoreUiCustomizationSaveRequest,
@@ -17,11 +28,30 @@ import {
   updateLiveArtifact,
 } from '../../src/live-artifacts/store.js';
 
+const oldSettings: CoreUiCustomizationSaveSettings = {
+  field: 'ocean-deep',
+  sidebar: 'carbon-blue',
+  tabs: 'wet-slate',
+  selected: 'storm-slate',
+  headers: 'mineral-blue',
+  data: 'clouded-steel',
+};
+
+const oldCanonicalCustomization = {
+  field: oldSettings.field,
+  sidebar: oldSettings.sidebar,
+  tabs: oldSettings.tabs,
+  selected: oldSettings.selected,
+  panelHeaders: oldSettings.headers,
+  data: oldSettings.data,
+};
+
 const request: CoreUiCustomizationSaveRequest = {
   type: 'od:live-artifact-project-save-request',
-  version: 1,
+  version: CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
   requestId: 'save-1',
   kind: 'core-ui-customization',
+  baseRevision: coreUiCustomizationRevision(oldSettings),
   settings: {
     field: 'ocean',
     sidebar: 'ocean-raised',
@@ -32,7 +62,6 @@ const request: CoreUiCustomizationSaveRequest = {
   },
 };
 
-const roleNames = ['field', 'sidebar', 'tabs', 'selected', 'headers', 'data'] as const;
 const canonicalRoleNames = {
   field: 'field',
   sidebar: 'sidebar',
@@ -41,20 +70,9 @@ const canonicalRoleNames = {
   headers: 'panelHeaders',
   data: 'data',
 } as const;
-const newPaletteCases = roleNames.flatMap((role) => (
-  ['ocean', 'ocean-raised'] as const
-).map((value) => [role, value] as const));
-const originalPaletteValues = [
-  'ocean-deep',
-  'carbon-blue',
-  'wet-slate',
-  'storm-slate',
-  'muted-fjord',
-  'mineral-blue',
-  'clouded-steel',
-  'harbor-steel',
-  'silvered-slate',
-] as const;
+const paletteCases = CORE_UI_CUSTOMIZATION_SAVE_ROLE_NAMES.flatMap((role) => (
+  CORE_UI_CUSTOMIZATION_SAVE_PALETTE_VALUES.map((value) => [role, value] as const)
+));
 const disallowedPaletteValues = ['ocean-line', 'teal', 'amber', 'action-blue', 'success'] as const;
 
 function artifact(dataJson: Record<string, unknown>): LiveArtifact {
@@ -80,10 +98,14 @@ function artifact(dataJson: Record<string, unknown>): LiveArtifact {
   };
 }
 
-function harness(failWriteNumber?: number, failPreview = false) {
+function harness(options: {
+  failWriteNumbers?: readonly number[];
+  failArtifactUpdateNumbers?: readonly number[];
+  failPreviewNumbers?: readonly number[];
+} = {}) {
   const files = new Map<string, string>([
-    ['/project/data.json', JSON.stringify({ keep: 'data', uiCustomization: { field: 'old' } })],
-    ['/project/live-source.json', JSON.stringify({ keep: 'source', uiCustomization: { field: 'old' } })],
+    ['/project/data.json', JSON.stringify({ keep: 'data', uiCustomization: oldCanonicalCustomization })],
+    ['/project/live-source.json', JSON.stringify({ keep: 'source', uiCustomization: oldCanonicalCustomization })],
     ['/project/artifact.json', JSON.stringify({
       keep: 'artifact',
       document: {
@@ -91,35 +113,57 @@ function harness(failWriteNumber?: number, failPreview = false) {
         templatePath: 'template.html',
         generatedPreviewPath: 'index.html',
         dataPath: 'data.json',
-        dataJson: { keep: 'document', uiCustomization: { field: 'old' } },
+        dataJson: { keep: 'document', uiCustomization: oldCanonicalCustomization },
       },
     })],
   ]);
   const originals = new Map(files);
-  let registered = artifact({ keep: 'registered', uiCustomization: { field: 'old' } });
+  let registered = artifact({ keep: 'registered', uiCustomization: oldCanonicalCustomization });
   let writeNumber = 0;
+  let artifactUpdateNumber = 0;
+  let previewNumber = 0;
+  const failWriteNumbers = new Set(options.failWriteNumbers ?? []);
+  const failArtifactUpdateNumbers = new Set(options.failArtifactUpdateNumbers ?? []);
+  const failPreviewNumbers = new Set(options.failPreviewNumbers ?? []);
   const events: string[] = [];
   const operations: CoreUiProjectSaveOperations = {
+    resolveCanonicalFilePaths: async () => [
+      '/project/data.json',
+      '/project/live-source.json',
+      '/project/artifact.json',
+    ],
     readText: async (filePath) => files.get(filePath)!,
     writeTextAtomic: async (filePath, contents) => {
       writeNumber += 1;
       events.push(`write:${filePath}`);
-      if (writeNumber === failWriteNumber) throw new Error(`write ${writeNumber} failed`);
+      if (failWriteNumbers.has(writeNumber)) throw new Error(`write ${writeNumber} failed`);
       files.set(filePath, contents);
     },
     getLiveArtifact: async () => registered,
     updateLiveArtifact: async (document) => {
+      artifactUpdateNumber += 1;
       events.push('update-artifact');
+      if (failArtifactUpdateNumbers.has(artifactUpdateNumber)) {
+        throw new Error(`artifact update ${artifactUpdateNumber} failed`);
+      }
       registered = { ...registered, document };
       return registered;
     },
     ensureLiveArtifactPreview: vi.fn(async () => {
+      previewNumber += 1;
       events.push('preview');
-      if (failPreview && events.filter((event) => event === 'preview').length === 1) throw new Error('preview failed');
+      if (failPreviewNumbers.has(previewNumber)) throw new Error(`preview ${previewNumber} failed`);
       return { artifact: registered, html: '<!doctype html><main>updated</main>' };
     }),
   };
-  return { events, files, operations, originals, registered: () => registered };
+  return {
+    events,
+    files,
+    operations,
+    originals,
+    registered: () => registered,
+    counts: () => ({ writeNumber, artifactUpdateNumber, previewNumber }),
+  };
 }
 
 describe('Core UI canonical project save', () => {
@@ -127,10 +171,11 @@ describe('Core UI canonical project save', () => {
     ['missing role', { ...request, settings: { ...request.settings, data: undefined } }],
     ['extra role', { ...request, settings: { ...request.settings, footer: 'carbon-blue' } }],
     ['invalid value', { ...request, settings: { ...request.settings, tabs: 'hot-pink' } }],
+    ['extra path field', { ...request, path: '../outside/data.json' }],
   ])('rejects %s before writing', async (_label, candidate) => {
     const state = harness();
     await expect(saveCoreUiProjectCustomization({ projectDir: '/project', request: candidate, operations: state.operations }))
-      .rejects.toThrow(/Customization/);
+      .rejects.toThrow(/Customization|Save request/);
     expect(state.events).toEqual([]);
     for (const [filePath, contents] of state.originals) expect(state.files.get(filePath)).toBe(contents);
   });
@@ -142,15 +187,7 @@ describe('Core UI canonical project save', () => {
     })).toThrow('Customization value for field is invalid.');
   });
 
-  it.each(originalPaletteValues)('keeps original governed value %s valid', (value) => {
-    const candidate: CoreUiCustomizationSaveRequest = {
-      ...request,
-      settings: { ...request.settings, field: value },
-    };
-    expect(validateCoreUiCustomizationSaveRequest(candidate)).toEqual(candidate);
-  });
-
-  it.each(newPaletteCases)('saves governed role %s with value %s', async (role, value) => {
+  it.each(paletteCases)('saves governed role %s with value %s', async (role, value) => {
     const state = harness();
     const candidate: CoreUiCustomizationSaveRequest = {
       ...request,
@@ -198,10 +235,7 @@ describe('Core UI canonical project save', () => {
     const projectId = 'core-ui-project';
     const registeredTemplate = '<!doctype html><style>:root{--field:{{data.uiCustomization.field}}}</style><main>Core UI</main>';
     const visibleProjectTemplate = '<!doctype html><button id="save">Save</button><script>parent.postMessage({type:"od:live-artifact-project-save-request"},"*")</script>';
-    const oldCustomization = {
-      field: 'ocean-deep', sidebar: 'ocean-deep', tabs: 'ocean-deep', selected: 'ocean-deep',
-      panelHeaders: 'ocean-deep', data: 'ocean-deep',
-    };
+    const oldCustomization = oldCanonicalCustomization;
     try {
       await mkdir(projectDir, { recursive: true });
       const document = {
@@ -241,6 +275,8 @@ describe('Core UI canonical project save', () => {
       const result = await saveCoreUiProjectCustomization({ projectDir, request, operations });
 
       expect(result.html).toContain('--field:ocean');
+      expect(result.previousRevision).toBe(request.baseRevision);
+      expect(result.revision).toBe(coreUiCustomizationRevision(request.settings));
       expect(await readFile(path.join(projectDir, 'template.html'), 'utf8')).toBe(visibleProjectTemplate);
       expect(await readFile(created.paths.templateHtmlPath, 'utf8')).toBe(registeredTemplate);
       expect(await readFile(created.paths.templateHtmlPath, 'utf8')).not.toContain('<script');
@@ -256,25 +292,69 @@ describe('Core UI canonical project save', () => {
       expect(liveSourceJson).toEqual(dataJson);
       expect(artifactJson.document.dataJson).toEqual(dataJson);
       expect(persisted.artifact.document.dataJson).toEqual(dataJson);
+      expect(await readCoreUiProjectCustomizationState({ projectDir })).toEqual({
+        version: CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+        revision: result.revision,
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it.each([2, 3])('restores earlier files when canonical write %i fails', async (failedWrite) => {
-    const state = harness(failedWrite);
+  it.each([1, 2, 3])('handles canonical write %i failure without partial state', async (failedWrite) => {
+    const state = harness({ failWriteNumbers: [failedWrite] });
     await expect(saveCoreUiProjectCustomization({ projectDir: '/project', request, operations: state.operations }))
       .rejects.toThrow(`write ${failedWrite} failed`);
     for (const [filePath, contents] of state.originals) expect(state.files.get(filePath)).toBe(contents);
   });
 
-  it('restores all canonical and registered files when regeneration fails', async () => {
-    const state = harness(undefined, true);
+  it('restores all canonical files when the registered artifact update fails', async () => {
+    const state = harness({ failArtifactUpdateNumbers: [1] });
     const originalRegistered = await state.operations.getLiveArtifact();
     await expect(saveCoreUiProjectCustomization({ projectDir: '/project', request, operations: state.operations }))
-      .rejects.toThrow('preview failed');
+      .rejects.toThrow('artifact update 1 failed');
+    for (const [filePath, contents] of state.originals) expect(state.files.get(filePath)).toBe(contents);
+    expect(state.registered().document).toEqual(originalRegistered.document);
+    expect(state.counts()).toEqual({ writeNumber: 6, artifactUpdateNumber: 2, previewNumber: 1 });
+  });
+
+  it('restores all canonical and registered files when preview regeneration fails', async () => {
+    const state = harness({ failPreviewNumbers: [1] });
+    const originalRegistered = await state.operations.getLiveArtifact();
+    await expect(saveCoreUiProjectCustomization({ projectDir: '/project', request, operations: state.operations }))
+      .rejects.toThrow('preview 1 failed');
     for (const [filePath, contents] of state.originals) expect(state.files.get(filePath)).toBe(contents);
     expect(state.registered().document).toEqual(originalRegistered.document);
     expect(state.events).toEqual(expect.arrayContaining(['preview', 'update-artifact']));
+  });
+
+  it('reports an incomplete rollback without hiding the original failure', async () => {
+    const state = harness({ failWriteNumbers: [3, 4] });
+    const failure = await saveCoreUiProjectCustomization({ projectDir: '/project', request, operations: state.operations })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(CoreUiProjectSaveTransactionError);
+    expect(failure).toMatchObject({
+      rollbackOutcome: 'incomplete',
+      originalError: expect.objectContaining({ message: 'write 3 failed' }),
+    });
+    expect(state.files.get('/project/data.json')).toBe(state.originals.get('/project/data.json'));
+    expect(state.files.get('/project/live-source.json')).not.toBe(state.originals.get('/project/live-source.json'));
+    expect(state.files.get('/project/artifact.json')).toBe(state.originals.get('/project/artifact.json'));
+  });
+
+  it('rejects a stale revision before any mutation and preserves preview selections for retry', async () => {
+    const state = harness();
+    const staleRequest = {
+      ...request,
+      baseRevision: coreUiCustomizationRevision({ ...oldSettings, field: 'silvered-slate' }),
+    };
+    const failure = await saveCoreUiProjectCustomization({
+      projectDir: '/project', request: staleRequest, operations: state.operations,
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(CoreUiProjectSaveConflictError);
+    expect(failure).toMatchObject({ currentRevision: request.baseRevision });
+    expect((failure as Error).message).toContain('preview selections remain local');
+    expect(state.events).toEqual([]);
+    for (const [filePath, contents] of state.originals) expect(state.files.get(filePath)).toBe(contents);
   });
 });

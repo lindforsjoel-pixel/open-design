@@ -17,7 +17,11 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
-import { executionProfileFromStreamFormat, PLUGIN_SHARE_ACTION_PLUGIN_IDS } from '@open-design/contracts';
+import {
+  CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+  executionProfileFromStreamFormat,
+  PLUGIN_SHARE_ACTION_PLUGIN_IDS,
+} from '@open-design/contracts';
 import { isTodoWriteToolName, stopReasonIsTruncation, todoItemsFromTodoWriteInput } from '@open-design/contracts';
 import {
   composeSystemPrompt,
@@ -2602,7 +2606,12 @@ export async function startServer({
 
   app.get('/api/health', async (_req, res) => {
     const versionInfo = await readCurrentAppVersionInfo();
-    res.json({ ok: true, version: versionInfo.version });
+    res.json({
+      ok: true,
+      version: versionInfo.version,
+      releaseCommit: process.env.OD_RELEASE_COMMIT?.trim() || null,
+      saveContractVersion: CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+    });
   });
 
   app.get('/api/ready', async (_req, res) => {

@@ -1,28 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
+import {
+  CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+  CORE_UI_CUSTOMIZATION_SAVE_PALETTE_VALUES,
+  CORE_UI_CUSTOMIZATION_SAVE_ROLE_NAMES,
+  type CoreUiCustomizationRevision,
+} from '@open-design/contracts';
 
 import {
+  coreUiProjectSaveLegacyReceipt,
   coreUiProjectSaveRequest,
+  coreUiProjectSaveRevisionUnavailableReceipt,
   coreUiProjectSaveValidationReceipt,
 } from '../src/live-artifacts/project-save-bridge';
 import { renderProjectTemplatePreview } from '../src/live-artifacts/project-template-preview';
 
-const roles = ['field', 'sidebar', 'tabs', 'selected', 'headers', 'data'] as const;
-const newPaletteCases = roles.flatMap((role) => (
-  ['ocean', 'ocean-raised'] as const
-).map((value) => [role, value] as const));
-const originalPaletteValues = [
-  'ocean-deep',
-  'carbon-blue',
-  'wet-slate',
-  'storm-slate',
-  'muted-fjord',
-  'mineral-blue',
-  'clouded-steel',
-  'harbor-steel',
-  'silvered-slate',
-] as const;
+const paletteCases = CORE_UI_CUSTOMIZATION_SAVE_ROLE_NAMES.flatMap((role) => (
+  CORE_UI_CUSTOMIZATION_SAVE_PALETTE_VALUES.map((value) => [role, value] as const)
+));
 const disallowedPaletteValues = ['ocean-line', 'teal', 'amber', 'action-blue', 'success'] as const;
+const baseRevision = `sha256:${'a'.repeat(64)}` as CoreUiCustomizationRevision;
+const nextRevision = `sha256:${'b'.repeat(64)}` as CoreUiCustomizationRevision;
 
 const settings = {
   field: 'carbon-blue',
@@ -57,38 +55,42 @@ describe('live artifact project save host bridge', () => {
   });
 
   it('accepts the exact request after the viewer authenticates its source', () => {
-    expect(coreUiProjectSaveRequest(request)).toEqual(request);
+    expect(coreUiProjectSaveRequest(request, baseRevision)).toEqual({
+      ...request,
+      version: CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+      baseRevision,
+    });
   });
 
-  it.each(newPaletteCases)('accepts %s role with governed value %s', (role, value) => {
+  it.each(paletteCases)('accepts %s role with governed value %s', (role, value) => {
     const candidate = { ...request, settings: { ...settings, [role]: value } };
-    expect(coreUiProjectSaveRequest(candidate)).toEqual(candidate);
-  });
-
-  it.each(originalPaletteValues)('keeps original governed value %s valid', (value) => {
-    const candidate = { ...request, settings: { ...settings, field: value } };
-    expect(coreUiProjectSaveRequest(candidate)).toEqual(candidate);
+    expect(coreUiProjectSaveRequest(candidate, baseRevision)).toMatchObject({
+      baseRevision,
+      settings: { [role]: value },
+    });
   });
 
   it.each(disallowedPaletteValues)('rejects non-governed value %s', (value) => {
     const candidate = { ...request, settings: { ...settings, field: value } };
-    expect(coreUiProjectSaveRequest(candidate)).toBeNull();
-    expect(coreUiProjectSaveValidationReceipt(candidate)).toEqual({
+    expect(coreUiProjectSaveRequest(candidate, baseRevision)).toBeNull();
+    expect(coreUiProjectSaveValidationReceipt(candidate, baseRevision)).toEqual({
       type: 'od:live-artifact-project-save-result',
       version: 1,
       requestId: request.requestId,
       ok: false,
+      code: 'validation_error',
+      revision: baseRevision,
       message: 'Customization settings are invalid.',
     });
   });
 
   it('only creates a validation receipt for a recognized request with a matching id', () => {
-    expect(coreUiProjectSaveValidationReceipt(request)).toBeNull();
-    expect(coreUiProjectSaveValidationReceipt({ type: 'unrelated', requestId: request.requestId })).toBeNull();
+    expect(coreUiProjectSaveValidationReceipt(request, baseRevision)).toBeNull();
+    expect(coreUiProjectSaveValidationReceipt({ type: 'unrelated', requestId: request.requestId }, baseRevision)).toBeNull();
     expect(coreUiProjectSaveValidationReceipt({
       ...request,
       settings: { ...settings, tabs: 'unknown-color' },
-    })).toMatchObject({ requestId: request.requestId, ok: false });
+    }, baseRevision)).toMatchObject({ requestId: request.requestId, ok: false, revision: baseRevision });
   });
 
   it.each([
@@ -97,7 +99,37 @@ describe('live artifact project save host bridge', () => {
     ['invalid value', { ...request, settings: { ...settings, tabs: 'hot-pink' } }],
     ['extra request field', { ...request, projectId: 'attacker-project' }],
   ])('rejects %s', (_label, candidate) => {
-    expect(coreUiProjectSaveRequest(candidate)).toBeNull();
+    expect(coreUiProjectSaveRequest(candidate, baseRevision)).toBeNull();
+  });
+
+  it('requires a server-provided canonical revision before constructing a save request', () => {
+    expect(coreUiProjectSaveRequest(request, null)).toBeNull();
+    expect(coreUiProjectSaveRevisionUnavailableReceipt(request)).toMatchObject({
+      requestId: request.requestId,
+      ok: false,
+      code: 'failed',
+      revision: null,
+    });
+  });
+
+  it('translates a v2 server receipt for the legacy template without dropping revision or conflict semantics', () => {
+    expect(coreUiProjectSaveLegacyReceipt({
+      type: 'od:live-artifact-project-save-result',
+      version: CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+      requestId: request.requestId,
+      ok: false,
+      code: 'conflict',
+      revision: nextRevision,
+      message: 'Canonical customization changed; your preview selections remain local.',
+    })).toEqual({
+      type: 'od:live-artifact-project-save-result',
+      version: 1,
+      requestId: request.requestId,
+      ok: false,
+      code: 'conflict',
+      revision: nextRevision,
+      message: 'Canonical customization changed; your preview selections remain local.',
+    });
   });
 
   it('renders escaped project-template bindings while preserving project scripts', () => {

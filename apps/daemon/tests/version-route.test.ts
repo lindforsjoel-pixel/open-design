@@ -38,11 +38,21 @@ describe('/api/version', () => {
       fetch(`${baseUrl}/api/health`),
       fetch(`${baseUrl}/api/version`),
     ]);
-    const health = await healthRes.json() as { ok?: unknown; version?: unknown };
+    const health = await healthRes.json() as {
+      ok?: unknown;
+      version?: unknown;
+      releaseCommit?: unknown;
+      saveContractVersion?: unknown;
+    };
     const version = await versionRes.json() as { version?: { version?: unknown } };
 
     expect(healthRes.ok).toBe(true);
     expect(versionRes.ok).toBe(true);
-    expect(health).toEqual({ ok: true, version: version.version?.version });
+    expect(health).toEqual({
+      ok: true,
+      version: version.version?.version,
+      releaseCommit: process.env.OD_RELEASE_COMMIT?.trim() || null,
+      saveContractVersion: 2,
+    });
   });
 });

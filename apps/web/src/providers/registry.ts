@@ -24,6 +24,15 @@ import type {
   SocialShareRequest,
   SocialShareResponse,
 } from '@open-design/contracts';
+import {
+  CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
+  CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE,
+  isCoreUiCustomizationRevision,
+  isCoreUiCustomizationSaveResult,
+  type CoreUiCustomizationSaveRequest,
+  type CoreUiCustomizationSaveResult,
+  type CoreUiCustomizationSaveStateResponse,
+} from '@open-design/contracts';
 import type {
   AgentInfo,
   AppVersionInfo,
@@ -1587,13 +1596,15 @@ export async function refreshLiveArtifact(
 export async function saveLiveArtifactProjectCustomization(
   projectId: string,
   artifactId: string,
-  request: import('@open-design/contracts').CoreUiCustomizationSaveRequest,
-): Promise<import('@open-design/contracts').CoreUiCustomizationSaveResult> {
-  const fallback = (message: string): import('@open-design/contracts').CoreUiCustomizationSaveResult => ({
-    type: 'od:live-artifact-project-save-result',
-    version: 1,
+  request: CoreUiCustomizationSaveRequest,
+): Promise<CoreUiCustomizationSaveResult> {
+  const fallback = (message: string): CoreUiCustomizationSaveResult => ({
+    type: CORE_UI_CUSTOMIZATION_SAVE_RESULT_TYPE,
+    version: CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION,
     requestId: request.requestId,
     ok: false,
+    code: 'failed',
+    revision: request.baseRevision,
     message,
   });
   try {
@@ -1605,17 +1616,34 @@ export async function saveLiveArtifactProjectCustomization(
         body: JSON.stringify(request),
       },
     );
-    const result = await response.json() as import('@open-design/contracts').CoreUiCustomizationSaveResult;
-    if (
-      result.type !== 'od:live-artifact-project-save-result'
-      || result.version !== 1
-      || result.requestId !== request.requestId
-      || typeof result.ok !== 'boolean'
-      || typeof result.message !== 'string'
-    ) return fallback('Save failed. Your selections are still unsaved; try again.');
+    const result = await response.json() as unknown;
+    if (!isCoreUiCustomizationSaveResult(result) || result.requestId !== request.requestId) {
+      return fallback('Save failed. Your selections are still unsaved; try again.');
+    }
     return result;
   } catch {
     return fallback('Save failed. Your selections are still unsaved; try again.');
+  }
+}
+
+export async function fetchLiveArtifactProjectSaveState(
+  projectId: string,
+  artifactId: string,
+): Promise<CoreUiCustomizationSaveStateResponse | null> {
+  try {
+    const response = await fetch(
+      `/api/live-artifacts/${encodeURIComponent(artifactId)}/project-save-state?projectId=${encodeURIComponent(projectId)}`,
+      { cache: 'no-store' },
+    );
+    if (!response.ok) return null;
+    const value = await response.json() as Record<string, unknown>;
+    if (
+      value.version !== CORE_UI_CUSTOMIZATION_SAVE_CONTRACT_VERSION
+      || !isCoreUiCustomizationRevision(value.revision)
+    ) return null;
+    return value as unknown as CoreUiCustomizationSaveStateResponse;
+  } catch {
+    return null;
   }
 }
 
