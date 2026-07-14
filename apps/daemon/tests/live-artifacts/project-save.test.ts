@@ -245,10 +245,17 @@ describe('Core UI canonical project save', () => {
       expect(await readFile(created.paths.templateHtmlPath, 'utf8')).toBe(registeredTemplate);
       expect(await readFile(created.paths.templateHtmlPath, 'utf8')).not.toContain('<script');
       const persisted = await getLiveArtifact({ projectsRoot, projectId, artifactId });
-      expect(persisted.artifact.document.dataJson.uiCustomization).toEqual({
+      const expectedCustomization = {
         field: 'ocean', sidebar: 'ocean-raised', tabs: 'wet-slate', selected: 'storm-slate',
         panelHeaders: 'mineral-blue', data: 'clouded-steel',
-      });
+      };
+      const dataJson = JSON.parse(await readFile(path.join(projectDir, 'data.json'), 'utf8'));
+      const liveSourceJson = JSON.parse(await readFile(path.join(projectDir, 'live-source.json'), 'utf8'));
+      const artifactJson = JSON.parse(await readFile(path.join(projectDir, 'artifact.json'), 'utf8'));
+      expect(dataJson).toEqual({ meta: { product: 'Core UI' }, uiCustomization: expectedCustomization });
+      expect(liveSourceJson).toEqual(dataJson);
+      expect(artifactJson.document.dataJson).toEqual(dataJson);
+      expect(persisted.artifact.document.dataJson).toEqual(dataJson);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -134,11 +134,13 @@ describe('Core UI rendered project viewer save', () => {
       expect.objectContaining({ method: 'POST' }),
     ));
     await waitFor(() => expect(postMessageSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
+      {
         type: 'od:live-artifact-project-save-result',
+        version: 1,
         requestId: 'viewer-save-1',
         ok: true,
-      }),
+        message: 'Saved to canonical project files.',
+      },
       '*',
     ));
     expect(canonical.data.uiCustomization).toEqual(canonical.liveSource.uiCustomization);
