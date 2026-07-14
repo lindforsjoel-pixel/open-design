@@ -122,6 +122,7 @@ function migrate(db: SqliteDb): void {
       trace_object_files_json TEXT,
       feedback_json TEXT,
       pre_turn_file_names_json TEXT,
+      pre_turn_file_fingerprints_json TEXT,
       session_mode TEXT,
       run_context_json TEXT,
       applied_plugin_snapshot_json TEXT,
@@ -293,6 +294,9 @@ function migrate(db: SqliteDb): void {
   }
   if (!messageCols.some((c: DbRow) => c.name === 'pre_turn_file_names_json')) {
     db.exec(`ALTER TABLE messages ADD COLUMN pre_turn_file_names_json TEXT`);
+  }
+  if (!messageCols.some((c: DbRow) => c.name === 'pre_turn_file_fingerprints_json')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN pre_turn_file_fingerprints_json TEXT`);
   }
   if (!messageCols.some((c: DbRow) => c.name === 'trace_object_files_json')) {
     db.exec(`ALTER TABLE messages ADD COLUMN trace_object_files_json TEXT`);
@@ -1403,6 +1407,7 @@ export function listMessages(db: SqliteDb, conversationId: string) {
               trace_object_files_json AS traceObjectFilesJson,
               feedback_json AS feedbackJson,
               pre_turn_file_names_json AS preTurnFileNamesJson,
+              pre_turn_file_fingerprints_json AS preTurnFileFingerprintsJson,
               session_mode AS sessionMode,
               run_context_json AS runContextJson,
               applied_plugin_snapshot_json AS appliedPluginSnapshotJson,
@@ -1428,7 +1433,7 @@ export function upsertMessage(db: SqliteDb, conversationId: string, m: DbRow) {
               run_id = ?, run_status = ?, result_delivery_state = ?, last_run_event_id = ?,
               events_json = ?, attachments_json = ?, comment_attachments_json = ?,
               produced_files_json = ?, trace_object_files_json = ?, feedback_json = ?,
-              pre_turn_file_names_json = ?,
+              pre_turn_file_names_json = ?, pre_turn_file_fingerprints_json = ?,
               session_mode = ?, run_context_json = ?, applied_plugin_snapshot_json = ?,
               telemetry_finalized_at = CASE
                 WHEN ? THEN COALESCE(telemetry_finalized_at, ?)
@@ -1452,6 +1457,7 @@ export function upsertMessage(db: SqliteDb, conversationId: string, m: DbRow) {
       m.traceObjectFiles ? JSON.stringify(m.traceObjectFiles) : null,
       m.feedback ? JSON.stringify(m.feedback) : null,
       m.preTurnFileNames ? JSON.stringify(m.preTurnFileNames) : null,
+      m.preTurnFileFingerprints ? JSON.stringify(m.preTurnFileFingerprints) : null,
       normalizeMessageSessionModeForStorage(m.sessionMode),
       m.runContext ? JSON.stringify(m.runContext) : null,
       m.appliedPluginSnapshot ? JSON.stringify(m.appliedPluginSnapshot) : null,
@@ -1471,10 +1477,11 @@ export function upsertMessage(db: SqliteDb, conversationId: string, m: DbRow) {
     const createdAt = typeof m.createdAt === 'number' && Number.isFinite(m.createdAt)
       ? m.createdAt
       : now;
-    // 25 values: id, conversation_id, role, content, agent_id, agent_name,
+    // 26 values: id, conversation_id, role, content, agent_id, agent_name,
     // run_id, run_status, result_delivery_state, last_run_event_id, events_json, attachments_json,
     // comment_attachments_json, produced_files_json, trace_object_files_json,
-    // feedback_json, pre_turn_file_names_json, session_mode, run_context_json,
+    // feedback_json, pre_turn_file_names_json, pre_turn_file_fingerprints_json,
+    // session_mode, run_context_json,
     // applied_plugin_snapshot_json, telemetry_finalized_at, started_at,
     // ended_at, position, created_at.
     db.prepare(
@@ -1483,9 +1490,10 @@ export function upsertMessage(db: SqliteDb, conversationId: string, m: DbRow) {
           run_id, run_status, result_delivery_state, last_run_event_id, events_json,
           attachments_json, comment_attachments_json, produced_files_json,
           trace_object_files_json, feedback_json, pre_turn_file_names_json,
-          session_mode, run_context_json, applied_plugin_snapshot_json,
-          telemetry_finalized_at, started_at, ended_at, position, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          pre_turn_file_fingerprints_json, session_mode, run_context_json,
+          applied_plugin_snapshot_json, telemetry_finalized_at, started_at,
+          ended_at, position, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       m.id,
       conversationId,
@@ -1504,6 +1512,7 @@ export function upsertMessage(db: SqliteDb, conversationId: string, m: DbRow) {
       m.traceObjectFiles ? JSON.stringify(m.traceObjectFiles) : null,
       m.feedback ? JSON.stringify(m.feedback) : null,
       m.preTurnFileNames ? JSON.stringify(m.preTurnFileNames) : null,
+      m.preTurnFileFingerprints ? JSON.stringify(m.preTurnFileFingerprints) : null,
       normalizeMessageSessionModeForStorage(m.sessionMode),
       m.runContext ? JSON.stringify(m.runContext) : null,
       m.appliedPluginSnapshot ? JSON.stringify(m.appliedPluginSnapshot) : null,
@@ -1532,6 +1541,7 @@ export function upsertMessage(db: SqliteDb, conversationId: string, m: DbRow) {
               trace_object_files_json AS traceObjectFilesJson,
               feedback_json AS feedbackJson,
               pre_turn_file_names_json AS preTurnFileNamesJson,
+              pre_turn_file_fingerprints_json AS preTurnFileFingerprintsJson,
               session_mode AS sessionMode,
               run_context_json AS runContextJson,
               applied_plugin_snapshot_json AS appliedPluginSnapshotJson,
@@ -1912,6 +1922,7 @@ function normalizeMessage(row: DbRow) {
     traceObjectFiles: parseJsonOrUndef(row.traceObjectFilesJson),
     feedback: parseJsonOrUndef(row.feedbackJson),
     preTurnFileNames: parseJsonOrUndef(row.preTurnFileNamesJson),
+    preTurnFileFingerprints: parseJsonOrUndef(row.preTurnFileFingerprintsJson),
     sessionMode: normalizeMessageSessionMode(row.sessionMode),
     runContext: parseJsonOrUndef(row.runContextJson),
     appliedPluginSnapshot: parseJsonOrUndef(row.appliedPluginSnapshotJson),

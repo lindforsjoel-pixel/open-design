@@ -12,7 +12,7 @@ import {
   upsertMessage,
 } from '../src/db.js';
 
-describe('preTurnFileNames persistence', () => {
+describe('pre-turn file baseline persistence', () => {
   let tempDir: string;
 
   beforeEach(() => {
@@ -48,14 +48,22 @@ describe('preTurnFileNames persistence', () => {
       runStatus: 'running',
       startedAt: now,
       preTurnFileNames: ['existing.html', 'README.md'],
+      preTurnFileFingerprints: [
+        { name: 'existing.html', size: 120, mtime: 1_000 },
+        { name: 'README.md', size: 40, mtime: 2_000 },
+      ],
     });
 
     const reloaded = listMessages(db, 'conv-1');
     expect(reloaded).toHaveLength(1);
     expect(reloaded[0]!.preTurnFileNames).toEqual(['existing.html', 'README.md']);
+    expect(reloaded[0]!.preTurnFileFingerprints).toEqual([
+      { name: 'existing.html', size: 120, mtime: 1_000 },
+      { name: 'README.md', size: 40, mtime: 2_000 },
+    ]);
   });
 
-  it('preserves preTurnFileNames across a subsequent UPDATE upsert that omits the field', () => {
+  it('preserves both baselines across a subsequent UPDATE upsert', () => {
     const db = openDatabase(tempDir, { dataDir: tempDir });
     const now = seedConversation(db);
     upsertMessage(db, 'conv-1', {
@@ -66,6 +74,7 @@ describe('preTurnFileNames persistence', () => {
       runStatus: 'running',
       startedAt: now,
       preTurnFileNames: ['existing.html'],
+      preTurnFileFingerprints: [{ name: 'existing.html', size: 10, mtime: 1_000 }],
     });
     upsertMessage(db, 'conv-1', {
       id: 'assistant-1',
@@ -75,11 +84,15 @@ describe('preTurnFileNames persistence', () => {
       runStatus: 'running',
       startedAt: now,
       preTurnFileNames: ['existing.html'],
+      preTurnFileFingerprints: [{ name: 'existing.html', size: 10, mtime: 1_000 }],
     });
 
     const [msg] = listMessages(db, 'conv-1');
     expect(msg).toBeDefined();
     expect(msg!.preTurnFileNames).toEqual(['existing.html']);
+    expect(msg!.preTurnFileFingerprints).toEqual([
+      { name: 'existing.html', size: 10, mtime: 1_000 },
+    ]);
   });
 
   it('returns undefined when no baseline was ever written (legacy messages)', () => {
@@ -96,5 +109,6 @@ describe('preTurnFileNames persistence', () => {
     const [msg] = listMessages(db, 'conv-1');
     expect(msg).toBeDefined();
     expect(msg!.preTurnFileNames).toBeUndefined();
+    expect(msg!.preTurnFileFingerprints).toBeUndefined();
   });
 });

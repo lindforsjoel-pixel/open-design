@@ -1389,6 +1389,123 @@ describe('ProjectView conversation run isolation', () => {
     expect(screen.getByTestId('conversation-latest-runs').textContent).toContain('conv-a:succeeded');
   });
 
+  it('attributes a same-name HTML edit during normal completion', async () => {
+    conversationAMessages = [];
+    const beforeFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    const afterFile = { ...beforeFile, size: 140, mtime: 2_000 };
+    fetchProjectFiles.mockResolvedValueOnce([beforeFile]).mockResolvedValue([afterFile]);
+    let daemonRun: {
+      handlers: { onDone: (fullText?: string) => void };
+      onRunCreated?: (runId: string) => void;
+      onRunStatus?: (status: NonNullable<ChatMessage['runStatus']>) => void;
+    } | null = null;
+    streamViaDaemon.mockImplementation(async (input: unknown) => {
+      daemonRun = input as typeof daemonRun;
+      daemonRun?.onRunCreated?.('run-in-place-normal');
+      daemonRun?.onRunStatus?.('running');
+    });
+
+    renderProjectView(
+      config,
+      project,
+      [{ id: 'agent-1', name: 'OpenCode', bin: 'opencode', available: true, models: [] }],
+    );
+
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByTestId('send-message'));
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      daemonRun?.onRunStatus?.('succeeded');
+      daemonRun?.handlers.onDone('Updated the existing project file.');
+    });
+
+    await waitFor(() => {
+      const delivered = saveMessage.mock.calls
+        .map((call) => call[2] as ChatMessage)
+        .find((message) => message.producedFiles?.some((file) => file.name === 'index.html'));
+      expect(delivered?.resultDeliveryState).toBe('delivered');
+      expect(delivered?.events ?? []).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'ARTIFACT_NOT_FOUND' }),
+      ]));
+    });
+    expect(saveMessage.mock.calls.map((call) => call[2] as ChatMessage)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          preTurnFileNames: ['index.html'],
+          preTurnFileFingerprints: [{ name: 'index.html', size: 100, mtime: 1_000 }],
+        }),
+      ]),
+    );
+  });
+
+  it('captures a fresh fingerprint baseline when a queued run actually starts', async () => {
+    conversationAMessages = [];
+    const beforeFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    const afterFile = { ...beforeFile, size: 160, mtime: 3_000 };
+    fetchProjectFiles.mockResolvedValue([beforeFile]);
+    const daemonRuns: Array<{
+      handlers: { onDone: (fullText?: string) => void };
+      onRunCreated?: (runId: string) => void;
+      onRunStatus?: (status: NonNullable<ChatMessage['runStatus']>) => void;
+    }> = [];
+    streamViaDaemon.mockImplementation(async (input: unknown) => {
+      const run = input as (typeof daemonRuns)[number];
+      daemonRuns.push(run);
+      run.onRunCreated?.(`run-queued-${daemonRuns.length}`);
+      run.onRunStatus?.('running');
+    });
+
+    renderProjectView(
+      config,
+      project,
+      [{ id: 'agent-1', name: 'OpenCode', bin: 'opencode', available: true, models: [] }],
+    );
+
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByTestId('send-message'));
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('send-message-alt'));
+    await waitFor(() => expect(screen.getByTestId('send-queued-0').textContent).toBe('hello from c'));
+
+    await act(async () => {
+      daemonRuns[0]?.onRunStatus?.('succeeded');
+      daemonRuns[0]?.handlers.onDone('First run complete.');
+    });
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(2));
+
+    fetchProjectFiles.mockResolvedValue([afterFile]);
+    await act(async () => {
+      daemonRuns[1]?.onRunStatus?.('succeeded');
+      daemonRuns[1]?.handlers.onDone('Queued edit complete.');
+    });
+
+    await waitFor(() => {
+      const delivered = saveMessage.mock.calls
+        .map((call) => call[2] as ChatMessage)
+        .filter((message) => message.producedFiles?.some((file) => file.name === 'index.html'))
+        .at(-1);
+      expect(delivered?.preTurnFileFingerprints).toEqual([
+        { name: 'index.html', size: 100, mtime: 1_000 },
+      ]);
+      expect(delivered?.resultDeliveryState).toBe('delivered');
+    });
+  });
+
   it('skips an interrupted reattached run\'s completion side effects when it finishes late', async () => {
     // The interrupted run is tagged superseded synchronously at send-now time
     // (before handleStop clears the refs), so its late onDone — which the
@@ -1787,6 +1904,51 @@ describe('ProjectView conversation run isolation', () => {
       model: 'api-model',
     }));
     await waitFor(() => expect(playSound).toHaveBeenCalledWith('success-sound'));
+  });
+
+  it('attributes a same-name HTML edit when a BYOK run completes', async () => {
+    conversationAMessages = [];
+    const beforeFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    const afterFile = { ...beforeFile, size: 125, mtime: 2_000 };
+    fetchProjectFiles.mockResolvedValueOnce([beforeFile]).mockResolvedValue([afterFile]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+    let byokRun: { handlers: { onDone: (fullText?: string) => void } } | null = null;
+    streamViaDaemon.mockImplementation(async (input: unknown) => {
+      byokRun = input as typeof byokRun;
+    });
+
+    renderProjectView({
+      ...config,
+      mode: 'api',
+      apiProtocol: 'openai',
+      apiKey: 'test-key',
+      model: 'api-model',
+    });
+
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByTestId('send-message'));
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      byokRun?.handlers.onDone('Updated the existing project file through BYOK.');
+    });
+
+    await waitFor(() => {
+      const delivered = saveMessage.mock.calls
+        .map((call) => call[2] as ChatMessage)
+        .find((message) => message.producedFiles?.some((file) => file.name === 'index.html'));
+      expect(delivered?.resultDeliveryState).toBe('delivered');
+      expect(delivered?.preTurnFileFingerprints).toEqual([
+        { name: 'index.html', size: 100, mtime: 1_000 },
+      ]);
+    });
   });
 
   it('routes keyless local Ollama BYOK chats through OpenCode with provider metadata', async () => {

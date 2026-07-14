@@ -44,6 +44,9 @@ export interface ProjectFile {
   traceObjectReason?: 'new' | 'modified' | 'recovered';
 }
 
+/** Stable, persisted turn-start metadata used to attribute later file changes. */
+export type ProjectFileFingerprint = Pick<ProjectFile, 'name' | 'size' | 'mtime'>;
+
 export interface ProjectFolder {
   name: string;
   path: string;

@@ -1,4 +1,4 @@
-import type { ProjectFile } from './files';
+import type { ProjectFile, ProjectFileFingerprint } from './files';
 import type { RunResultPackageResponse, RunWorkspace } from './workspaces.js';
 import type {
   PreviewCommentAttachment,
@@ -667,6 +667,8 @@ export interface ChatMessage {
   traceObjectFiles?: ProjectFile[];
   // Diff baseline so reattach can rebuild producedFiles after reload.
   preTurnFileNames?: string[];
+  // Additive fingerprint baseline so same-name edits survive reload/reattach.
+  preTurnFileFingerprints?: ProjectFileFingerprint[];
   feedback?: ChatMessageFeedback;
   /**
    * Request-only marker for the final assistant-message persistence pass.

@@ -183,6 +183,7 @@ import type {
   ChatAnalyticsEntryFrom,
   ChatSessionMode,
   InstalledPluginRecord,
+  ProjectFileFingerprint,
   RunContextSelection,
   WorkspaceContextItem,
 } from '@open-design/contracts';
@@ -339,6 +340,12 @@ function mergeServerMessageWithLocal(server: ChatMessage, local?: ChatMessage): 
   }
   if (!server.preTurnFileNames?.length && local.preTurnFileNames?.length) {
     merged.preTurnFileNames = local.preTurnFileNames;
+  }
+  if (
+    !server.preTurnFileFingerprints?.length
+    && local.preTurnFileFingerprints?.length
+  ) {
+    merged.preTurnFileFingerprints = local.preTurnFileFingerprints;
   }
   if (!server.lastRunEventId && local.lastRunEventId) {
     merged.lastRunEventId = local.lastRunEventId;
@@ -3884,7 +3891,11 @@ export function ProjectView({
             let artifactPersistenceSucceeded = false;
             let artifactPersistenceError: string | undefined;
             if (artifactToPersist?.html) {
-              const producedBeforeFallback = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+              const producedBeforeFallback = computeProducedFiles(
+                beforeFileNames,
+                nextFiles,
+                message.preTurnFileFingerprints,
+              ) ?? [];
               const runStartedAt = status.createdAt || message.startedAt || message.createdAt;
               recoveredExistingArtifact =
                 await findSameTurnWriteForRecoveredArtifact({
@@ -3915,7 +3926,11 @@ export function ProjectView({
                 nextFiles = await refreshProjectFiles();
               }
             }
-            const diff = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+            const diff = computeProducedFiles(
+              beforeFileNames,
+              nextFiles,
+              message.preTurnFileFingerprints,
+            ) ?? [];
             const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
             const touchedFilePaths = extractTouchedFilePathsFromEvents(message.events);
             const traceObjectFiles = mergeRecoveredTraceObjectFile(
@@ -4199,7 +4214,11 @@ export function ProjectView({
                   ? parsedArtifact
                   : artifactFromStandaloneHtml(replayedContent);
                 if (artifactToPersist?.html) {
-                  const producedBeforeFallback = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+                  const producedBeforeFallback = computeProducedFiles(
+                    beforeFileNames,
+                    nextFiles,
+                    message.preTurnFileFingerprints,
+                  ) ?? [];
                   const runStartedAt = status.createdAt || message.startedAt || message.createdAt;
                   recoveredExistingArtifact =
                     await findSameTurnWriteForRecoveredArtifact({
@@ -4230,7 +4249,11 @@ export function ProjectView({
                     nextFiles = await refreshProjectFiles();
                   }
                 }
-                const diff = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+                const diff = computeProducedFiles(
+                  beforeFileNames,
+                  nextFiles,
+                  message.preTurnFileFingerprints,
+                ) ?? [];
                 const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
                 const touchedFilePaths = extractTouchedFilePathsFromEvents(
                   needsFullReplay ? replayedEvents : message.events,
@@ -4327,7 +4350,11 @@ export function ProjectView({
                     );
                     const runStartedAt =
                       latestRunStatus?.createdAt || message.startedAt || message.createdAt;
-                    const producedBeforeFallback = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+                    const producedBeforeFallback = computeProducedFiles(
+                      beforeFileNames,
+                      nextFiles,
+                      message.preTurnFileFingerprints,
+                    ) ?? [];
                     let recoveredExistingArtifact =
                       await findSameTurnWriteForRecoveredArtifact({
                         artifact: artifactToPersist,
@@ -4358,7 +4385,11 @@ export function ProjectView({
                         { minMtime: runStartedAt },
                       );
                     }
-                    const diff = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+                    const diff = computeProducedFiles(
+                      beforeFileNames,
+                      nextFiles,
+                      message.preTurnFileFingerprints,
+                    ) ?? [];
                     const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
                     if (produced.length > 0) {
                       recoveredArtifactMessagesRef.current.add(message.id);
@@ -4714,7 +4745,11 @@ export function ProjectView({
           );
           const runStartedAt =
             latestRunStatus?.createdAt || message.startedAt || message.createdAt;
-          const producedBeforeFallback = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+          const producedBeforeFallback = computeProducedFiles(
+            beforeFileNames,
+            nextFiles,
+            message.preTurnFileFingerprints,
+          ) ?? [];
           let recoveredExistingArtifact =
             await findSameTurnWriteForRecoveredArtifact({
               artifact: artifactToPersist,
@@ -4746,7 +4781,11 @@ export function ProjectView({
             );
           }
           if (cancelled) return;
-          const diff = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+          const diff = computeProducedFiles(
+            beforeFileNames,
+            nextFiles,
+            message.preTurnFileFingerprints,
+          ) ?? [];
           const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
           if (produced.length === 0) {
             continue;
@@ -5138,6 +5177,7 @@ export function ProjectView({
           : apiProtocolModelLabel(config.apiProtocol, config.model);
       const byokOpenCodeProvider = byokOpenCodeProviderFromConfig(config);
       const preTurnFileNames = projectFiles.map((f) => f.name);
+      const preTurnFileFingerprints = snapshotProjectFileFingerprints(projectFiles);
       const assistantId = randomUUID();
       const assistantMsg: ChatMessage = {
         id: assistantId,
@@ -5151,6 +5191,7 @@ export function ProjectView({
         startedAt,
         sessionMode: runSessionMode,
         preTurnFileNames,
+        preTurnFileFingerprints,
       };
       let latestAssistantMsg: ChatMessage = assistantMsg;
       // Tracks the runId once POST /api/runs returns so that the live stream
@@ -5299,9 +5340,9 @@ export function ProjectView({
         }
       };
 
-      // Snapshot the file list at turn-start so we can diff after the
-      // agent finishes and surface anything new (e.g. a generated .pptx)
-      // as download chips on the assistant message.
+      // Keep the legacy name set for trace attribution, while produced-file
+      // delivery uses the additive fingerprint snapshot so same-name edits
+      // count as this turn's output too.
       const beforeFileNames = new Set(preTurnFileNames);
       // Pending Write/Edit tool invocations for this run: tool_use_id -> path.
       // Keeping this local prevents a superseded stream's late tool_result from
@@ -5617,7 +5658,11 @@ export function ProjectView({
                 ? parsedArtifact
                 : artifactFromStandaloneHtml(finalText);
               if (artifactToPersist?.html) {
-                const producedBeforeFallback = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+                const producedBeforeFallback = computeProducedFiles(
+                  beforeFileNames,
+                  nextFiles,
+                  preTurnFileFingerprints,
+                ) ?? [];
                 const sameTurnArtifactWrite =
                   await findSameTurnNonHtmlWriteForRecoveredArtifact({
                     artifact: artifactToPersist,
@@ -5647,7 +5692,11 @@ export function ProjectView({
                   nextFiles = await refreshProjectFiles();
                 }
               }
-              const produced = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+              const produced = computeProducedFiles(
+                beforeFileNames,
+                nextFiles,
+                preTurnFileFingerprints,
+              ) ?? [];
               // Completion half of the onboarding funnel: the first generation
               // in a recommendation-started project that actually produced a
               // previewable artifact. Gated on the same artifact-producing
@@ -9724,10 +9773,26 @@ function applyDesignDeliveryOutcome(
 export function computeProducedFiles(
   beforeNames: ReadonlySet<string> | readonly string[] | undefined,
   next: readonly ProjectFile[],
+  beforeFingerprints?: readonly ProjectFileFingerprint[],
 ): ProjectFile[] | undefined {
+  if (beforeFingerprints !== undefined) {
+    const beforeByName = new Map(
+      beforeFingerprints.map((fingerprint) => [fingerprint.name, fingerprint]),
+    );
+    return filterImplicitProducedFiles(next.filter((file) => {
+      const before = beforeByName.get(file.name);
+      return !before || before.size !== file.size || before.mtime !== file.mtime;
+    }));
+  }
   if (!beforeNames) return undefined;
   const set = beforeNames instanceof Set ? beforeNames : new Set(beforeNames);
   return filterImplicitProducedFiles(next.filter((f) => !set.has(f.name)));
+}
+
+export function snapshotProjectFileFingerprints(
+  files: readonly ProjectFile[],
+): ProjectFileFingerprint[] {
+  return files.map(({ name, size, mtime }) => ({ name, size, mtime }));
 }
 
 export function computeTraceObjectFiles(

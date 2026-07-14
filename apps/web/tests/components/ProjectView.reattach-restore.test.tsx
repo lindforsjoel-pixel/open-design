@@ -184,6 +184,61 @@ describe('computeProducedFiles', () => {
     expect(produced?.map((f) => f.name)).toEqual(['new.pptx']);
   });
 
+  it('returns a same-name HTML file when its fingerprint changed', () => {
+    const beforeNames = ['index.html'];
+    const beforeFingerprints = [{ name: 'index.html', size: 100, mtime: 1_000 }];
+    const next = [
+      {
+        name: 'index.html',
+        path: 'index.html',
+        size: 140,
+        mtime: 2_000,
+        kind: 'html',
+        mime: 'text/html',
+      },
+    ];
+
+    const produced = computeProducedFiles(beforeNames, next as never, beforeFingerprints);
+
+    expect(produced?.map((file) => file.name)).toEqual(['index.html']);
+  });
+
+  it('returns a same-size HTML file when only its mtime changed', () => {
+    const beforeNames = ['index.html'];
+    const beforeFingerprints = [{ name: 'index.html', size: 100, mtime: 1_000 }];
+    const next = [
+      {
+        name: 'index.html',
+        path: 'index.html',
+        size: 100,
+        mtime: 2_000,
+        kind: 'html',
+        mime: 'text/html',
+      },
+    ];
+
+    const produced = computeProducedFiles(beforeNames, next as never, beforeFingerprints);
+
+    expect(produced).toEqual(next);
+  });
+
+  it('does not return an unchanged same-name file', () => {
+    const beforeNames = ['index.html'];
+    const beforeFingerprints = [{ name: 'index.html', size: 100, mtime: 1_000 }];
+    const next = [
+      {
+        name: 'index.html',
+        path: 'index.html',
+        size: 100,
+        mtime: 1_000,
+        kind: 'html',
+        mime: 'text/html',
+      },
+    ];
+
+    expect(computeProducedFiles(beforeNames, next as never, beforeFingerprints)).toEqual([]);
+  });
+
   it('excludes user sketch files from turn output attribution', () => {
     const before = ['existing.html'];
     const next = [
@@ -455,7 +510,7 @@ describe('ProjectView daemon reattach restore', () => {
     ).toBe(false);
   });
 
-  it('populates producedFiles on the persisted message after reattach completes', async () => {
+  it('restores a same-name modified HTML file after reattach completes', async () => {
     const startedAt = Date.now();
     listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
     listMessages.mockResolvedValue([
@@ -467,15 +522,25 @@ describe('ProjectView daemon reattach restore', () => {
         startedAt,
         runId: 'run-1',
         runStatus: 'running',
+        sessionMode: 'design',
         preTurnFileNames: ['existing.html'],
+        preTurnFileFingerprints: [{ name: 'existing.html', size: 1, mtime: 1_000 }],
       } satisfies ChatMessage,
     ]);
     fetchPreviewComments.mockResolvedValue([]);
     loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
-    const beforeFiles = [{ name: 'existing.html', path: '/p/existing.html', size: 1, updatedAt: 0 }];
+    const beforeFiles = [
+      {
+        name: 'existing.html',
+        path: '/p/existing.html',
+        size: 1,
+        mtime: 1_000,
+        kind: 'html',
+        mime: 'text/html',
+      },
+    ];
     const afterFiles = [
-      ...beforeFiles,
-      { name: 'new.pptx', path: '/p/new.pptx', size: 2, updatedAt: 0 },
+      { ...beforeFiles[0], size: 2, mtime: 2_000 },
     ];
     fetchProjectFiles.mockResolvedValueOnce(beforeFiles).mockResolvedValue(afterFiles);
     fetchLiveArtifacts.mockResolvedValue([]);
@@ -522,8 +587,9 @@ describe('ProjectView daemon reattach restore', () => {
         .map((call) => call[2] as ChatMessage)
         .filter((m) => m?.id === 'msg-reattach' && Array.isArray(m.producedFiles))
         .at(-1);
-      expect(lastWithProduced?.producedFiles?.map((f) => f.name)).toEqual(['new.pptx']);
+      expect(lastWithProduced?.producedFiles?.map((f) => f.name)).toEqual(['existing.html']);
       expect(lastWithProduced?.runStatus).toBe('succeeded');
+      expect(lastWithProduced?.resultDeliveryState).toBe('delivered');
     });
   });
 
