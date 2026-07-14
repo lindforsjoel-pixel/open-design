@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -1111,6 +1111,26 @@ describe('live artifact store layout', () => {
         refreshPermission: 'manual_refresh_granted_for_read_only',
       },
     })).rejects.toThrow(/invalid file name|path escapes|reserved project path/);
+  });
+
+  it('rejects local file refresh paths outside an external project root', async () => {
+    const projectsRoot = await makeProjectsRoot();
+    const externalProjectRoot = await mkdtemp(path.join(tmpdir(), 'od-live-artifacts-external-'));
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), 'od-live-artifacts-outside-'));
+    tempRoots.push(externalProjectRoot, outsideRoot);
+    await writeFile(path.join(outsideRoot, 'secret.json'), JSON.stringify({ secret: true }));
+    await symlink(outsideRoot, path.join(externalProjectRoot, 'linked'));
+
+    await expect(executeLocalDaemonRefreshSource({
+      projectsRoot,
+      projectId: 'project-1',
+      projectMetadata: { kind: 'prototype', baseDir: externalProjectRoot },
+      source: {
+        type: 'local_file',
+        input: { path: 'linked/secret.json' },
+        refreshPermission: 'manual_refresh_granted_for_read_only',
+      },
+    })).rejects.toThrow(/path escapes project dir/);
   });
 
   it('merges local_file refresh output into existing document data', () => {

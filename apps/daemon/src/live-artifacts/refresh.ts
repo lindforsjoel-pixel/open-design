@@ -3,7 +3,8 @@ import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { listFiles, projectDir, readProjectFile, validateProjectPath } from '../projects.js';
+import type { ProjectMetadata } from '@open-design/contracts';
+import { listFiles, projectDir, readProjectFile, resolveProjectDir, validateProjectPath } from '../projects.js';
 import type { BoundedJsonObject, BoundedJsonValue, LiveArtifact, LiveArtifactRefreshSourceMetadata, LiveArtifactSource } from './schema.js';
 import { validateBoundedJsonObject } from './schema.js';
 
@@ -50,6 +51,7 @@ export type LocalDaemonRefreshToolName =
 export interface ExecuteLocalDaemonRefreshSourceOptions {
   projectsRoot: string;
   projectId: string;
+  projectMetadata?: ProjectMetadata;
   source: LiveArtifactSource;
   signal?: AbortSignal;
 }
@@ -586,7 +588,7 @@ async function executeProjectFilesSearch(options: ExecuteLocalDaemonRefreshSourc
 async function executeProjectFilesReadJson(options: ExecuteLocalDaemonRefreshSourceOptions): Promise<BoundedJsonObject> {
   const filePath = selectJsonPath(options.source.input as ProjectFilesReadJsonInput);
   if (!filePath.endsWith('.json')) throw new Error('project_files.read_json only supports .json files');
-  const dir = projectDir(options.projectsRoot, options.projectId);
+  const dir = resolveProjectDir(options.projectsRoot, options.projectId, options.projectMetadata);
   const target = path.resolve(dir, filePath);
   const [dirReal, targetLinkStat] = await Promise.all([realpath(dir), lstat(target)]);
   if (targetLinkStat.isSymbolicLink()) throw new Error('project_files.read_json does not follow symlinks');

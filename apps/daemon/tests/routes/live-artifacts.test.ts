@@ -1,5 +1,6 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { startServer } from '../../src/server.js';
 import { connectorService, ConnectorServiceError } from '../../src/connectors/service.js';
+import { liveArtifactStorePaths } from '../../src/live-artifacts/store.js';
 import { CHAT_TOOL_ENDPOINTS, CHAT_TOOL_OPERATIONS, toolTokenRegistry } from '../../src/tool-tokens.js';
 
 type StartedServer = { server: http.Server; url: string };
@@ -33,6 +35,7 @@ const serverRuntimeDataRoot = process.env.OD_DATA_DIR
 let server: http.Server | undefined;
 let baseUrl: string;
 const projectIds: string[] = [];
+const externalWorkspaceRoots: string[] = [];
 
 beforeEach(async () => {
   const started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
@@ -53,6 +56,9 @@ afterEach(async () => {
     cleanupProjectIds.map((projectId) =>
       rm(path.join(serverRuntimeDataRoot, 'projects', projectId), { recursive: true, force: true }),
     ),
+  );
+  await Promise.all(
+    externalWorkspaceRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
 });
 
@@ -430,6 +436,107 @@ describe('live artifact tool routes', () => {
         }),
       ]),
     );
+  });
+
+  it('refreshes a local_file source from an imported project workspace', async () => {
+    const externalWorkspace = await realpath(await mkdtemp(path.join(tmpdir(), 'od-live-artifact-route-external-')));
+    externalWorkspaceRoots.push(externalWorkspace);
+    await writeFile(path.join(externalWorkspace, 'live-source.json'), `${JSON.stringify({
+      summary: { owner: 'External workspace', status: 'ready' },
+      stats: { openBugs: 7 },
+    }, null, 2)}\n`, 'utf8');
+
+    const imported = await jsonFetch(`${baseUrl}/api/import/folder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseDir: externalWorkspace, name: 'External Live Artifact' }),
+    });
+    expect(imported.status).toBe(200);
+    const projectId = imported.body.project.id as string;
+    projectIds.push(projectId);
+    expect(imported.body.project.metadata.baseDir).toBe(externalWorkspace);
+
+    const token = mintToolToken(projectId, 'run-route-test-external-refresh');
+    const create = await jsonFetch(`${baseUrl}/api/tools/live-artifacts/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        input: {
+          ...validCreateInput('External Workspace Artifact'),
+          document: {
+            ...validCreateInput('External Workspace Artifact').document,
+            dataJson: { title: 'External Workspace Artifact' },
+            sourceJson: {
+              type: 'local_file',
+              input: { path: 'live-source.json' },
+              outputMapping: {
+                dataPaths: [
+                  { from: 'json.summary', to: 'summary' },
+                  { from: 'json.stats', to: 'stats' },
+                ],
+                transform: 'identity',
+              },
+              refreshPermission: 'manual_refresh_granted_for_read_only',
+            },
+          },
+        },
+        templateHtml: '<h1>{{data.title}}</h1><p>{{data.summary.owner}}</p><p>{{data.stats.openBugs}}</p>',
+      }),
+    });
+    expect(create.status).toBe(200);
+
+    const firstRefresh = await jsonFetch(`${baseUrl}/api/tools/live-artifacts/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ artifactId: create.body.artifact.id }),
+    });
+    expect(firstRefresh.status).toBe(200);
+    expect(firstRefresh.body.artifact).toMatchObject({
+      refreshStatus: 'succeeded',
+      lastRefreshedAt: expect.any(String),
+      document: {
+        dataJson: {
+          summary: { owner: 'External workspace', status: 'ready' },
+          stats: { openBugs: 7 },
+        },
+      },
+    });
+
+    await writeFile(path.join(externalWorkspace, 'live-source.json'), `${JSON.stringify({
+      summary: { owner: 'External workspace', status: 'updated' },
+      stats: { openBugs: 3 },
+    }, null, 2)}\n`, 'utf8');
+    const secondRefresh = await jsonFetch(`${baseUrl}/api/live-artifacts/${create.body.artifact.id}/refresh?projectId=${encodeURIComponent(projectId)}`, {
+      method: 'POST',
+    });
+    expect(secondRefresh.status).toBe(200);
+    expect(secondRefresh.body.refresh).toMatchObject({
+      id: 'refresh-000002',
+      status: 'succeeded',
+      refreshedSourceCount: 1,
+    });
+    expect(secondRefresh.body.artifact).toMatchObject({
+      refreshStatus: 'succeeded',
+      lastRefreshedAt: expect.any(String),
+      document: {
+        dataJson: {
+          summary: { owner: 'External workspace', status: 'updated' },
+          stats: { openBugs: 3 },
+        },
+      },
+    });
+
+    const paths = liveArtifactStorePaths(
+      path.join(serverRuntimeDataRoot, 'projects'),
+      projectId,
+      create.body.artifact.id,
+    );
+    const snapshotDir = path.join(paths.snapshotsDir, secondRefresh.body.refresh.id);
+    await expect(readFile(path.join(snapshotDir, 'index.html'), 'utf8')).resolves.toContain('<p>3</p>');
+    await expect(readFile(path.join(snapshotDir, 'artifact.json'), 'utf8')).resolves.toContain('"lastRefreshedAt"');
+    await expect(readFile(paths.generatedPreviewHtmlPath, 'utf8')).resolves.toContain('External workspace');
+    await expect(readFile(path.join(serverRuntimeDataRoot, 'projects', projectId, 'live-source.json'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('emits project SSE live artifact events for patch delete and refresh', async () => {

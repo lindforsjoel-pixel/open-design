@@ -9,7 +9,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
   const { PROJECTS_DIR } = ctx.paths;
   const { authorizeToolRequest, requestProjectOverride, requestRunOverride } = ctx.auth;
   const { createLiveArtifact, listLiveArtifacts, updateLiveArtifact, refreshLiveArtifact, emitLiveArtifactEvent, emitLiveArtifactRefreshEvent, readLiveArtifactCode, setLiveArtifactCodeHeaders, ensureLiveArtifactPreview, setLiveArtifactPreviewHeaders, getLiveArtifact, listLiveArtifactRefreshLogEntries, deleteLiveArtifact } = ctx.liveArtifacts;
-  const { updateProject } = ctx.projectStore;
+  const { getProject, updateProject } = ctx.projectStore;
   app.get('/api/live-artifacts', async (req, res) => {
     try {
       const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined;
@@ -201,6 +201,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         result = await refreshLiveArtifact({
           projectsRoot: PROJECTS_DIR,
           projectId: toolGrant.projectId,
+          projectMetadata: getProject(db, toolGrant.projectId)?.metadata,
           artifactId,
           onStarted: ({ refreshId }: any) => {
             emitLiveArtifactRefreshEvent(toolGrant, { phase: 'started', artifactId, refreshId });
@@ -288,6 +289,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         result = await refreshLiveArtifact({
           projectsRoot: PROJECTS_DIR,
           projectId,
+          projectMetadata: getProject(db, projectId)?.metadata,
           artifactId: req.params.artifactId,
           onStarted: ({ refreshId }: any) => {
             emitLiveArtifactRefreshEvent({ projectId }, { phase: 'started', artifactId: req.params.artifactId, refreshId });
