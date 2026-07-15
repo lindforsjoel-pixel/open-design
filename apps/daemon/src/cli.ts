@@ -207,7 +207,7 @@ const PROJECT_STRING_FLAGS = new Set([
   'prompt-file', 'path', 'dir', 'as',
   'agent', 'model', 'snapshot-id', 'inputs', 'grant-caps', 'editor',
   'title', 'label', 'against', 'seed-from', 'fork-after', 'mode',
-  'source',
+  'source', 'revision', 'delivery', 'digest',
 ]);
 const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow']);
 // `od templates …` mirrors NewProjectPanel / ExamplesTab. Same surface,
@@ -5835,6 +5835,14 @@ async function runProject(args) {
   od project git init <id>                Initialize Git in the project folder.
   od project git commit <id> <path...> --message "<subject>"
                                           Commit only the selected project files.
+  od project sync status <id>             Show design-system revision status.
+  od project sync init <id>               Initialize or refresh the subscription.
+  od project sync update-all <id>         List all subscribers from a design-system project.
+  od project sync rollback <id> --revision <sha>
+                                          Pin an asset project to a known revision.
+  od project sync resume <id>             Resume automatic updates after rollback.
+  od project sync approve <id> --delivery <id> --digest <sha256>
+                                          Publish only the exact approval-bound preview.
   od project handoff <id> --conversation <id> --api-key <key> --model <model>
                     [--base-url <url>] [--max-tokens <n>]
                     Synthesize a resume-conversation handoff prompt.
@@ -6116,6 +6124,54 @@ Common options:
         console.log(`${change.indexStatus}${change.worktreeStatus}\t${change.path}`);
       }
       if (status.truncated) console.log('… additional changes omitted');
+      return;
+    }
+    case 'sync': {
+      const parts = positionalArgs(rest, PROJECT_STRING_FLAGS);
+      const action = parts[0];
+      const id = parts[1];
+      if (!action || !id || !['status', 'init', 'update-all', 'publish', 'rollback', 'resume', 'approve'].includes(action)) {
+        console.error('Usage: od project sync <status|init|update-all|publish|rollback|resume|approve> <id> [--revision <sha>] [--delivery <id> --digest <sha256>] [--json]');
+        process.exit(2);
+      }
+      if (action === 'rollback' && typeof flags.revision !== 'string') {
+        console.error('--revision <sha> is required for rollback.');
+        process.exit(2);
+      }
+      if (action === 'approve' && (typeof flags.delivery !== 'string' || typeof flags.digest !== 'string')) {
+        console.error('--delivery <id> and --digest <sha256> are required for approval.');
+        process.exit(2);
+      }
+      const suffix = action === 'status' ? '' : `/${action}`;
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/design-workflow${suffix}`, action === 'status'
+        ? undefined
+        : {
+            method: 'POST',
+            ...(['rollback', 'approve'].includes(action)
+              ? {
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify(action === 'rollback'
+                    ? { sha: flags.revision }
+                    : { deliveryId: flags.delivery, implementationDigest: flags.digest }),
+                }
+              : {}),
+          });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      if (action === 'update-all') {
+        console.log(`[design-workflow] ${data.designSystemId} has ${data.subscriptions?.length ?? 0} subscriber(s)`);
+        for (const subscription of data.subscriptions ?? []) {
+          console.log(`${subscription.projectId}\t${subscription.status}\t${String(subscription.appliedSha).slice(0, 8)} -> ${String(subscription.targetSha).slice(0, 8)}`);
+        }
+        return;
+      }
+      const subscription = data.subscription;
+      console.log(`[design-workflow] ${data.role} ${data.status} at ${data.currentRevision?.shortSha ?? '-'}`);
+      if (subscription) {
+        console.log(`applied ${String(subscription.appliedSha).slice(0, 8)}; target ${String(subscription.targetSha).slice(0, 8)}`);
+        if (subscription.lastError) console.log(`error: ${subscription.lastError}`);
+      }
       return;
     }
     default:

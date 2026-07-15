@@ -18,6 +18,8 @@ import type {
   ProjectGitCommitRequest,
   ProjectGitCommitResponse,
   ProjectGitStatusResponse,
+  DesignWorkflowStatusResponse,
+  DesignWorkflowUpdateAllResponse,
   ProjectFileTextPreviewResponse,
   ProjectFileVersion,
   ProjectFileVersionSource,
@@ -2421,6 +2423,55 @@ export async function commitProjectGitChanges(
     throw new Error(body.message);
   }
   return (await resp.json()) as ProjectGitCommitResponse;
+}
+
+export async function fetchDesignWorkflowStatus(projectId: string): Promise<DesignWorkflowStatusResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/design-workflow`, { cache: 'no-store' });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as DesignWorkflowStatusResponse;
+}
+
+export async function resumeDesignWorkflow(projectId: string): Promise<DesignWorkflowStatusResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/design-workflow/resume`, { method: 'POST' });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as DesignWorkflowStatusResponse;
+}
+
+export async function rollbackDesignWorkflow(projectId: string, sha: string): Promise<DesignWorkflowStatusResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/design-workflow/rollback`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sha }),
+  });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as DesignWorkflowStatusResponse;
+}
+
+export async function updateAllDesignWorkflowProjects(projectId: string): Promise<DesignWorkflowUpdateAllResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/design-workflow/update-all`, { method: 'POST' });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as DesignWorkflowUpdateAllResponse;
+}
+
+export async function publishDesignWorkflowRevision(projectId: string): Promise<DesignWorkflowStatusResponse> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/design-workflow/publish`, { method: 'POST' });
+  if (!resp.ok) {
+    const body = await readApiErrorBody(resp);
+    throw new Error(body.message);
+  }
+  return (await resp.json()) as DesignWorkflowStatusResponse;
 }
 
 // Hand-off (open project in local app). The daemon enumerates installed

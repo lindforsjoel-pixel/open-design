@@ -3,6 +3,7 @@ import type { RegisterActiveContextRoutesDeps } from './routes/active-context.js
 import type { RegisterAutomationRoutesDeps } from './routes/automation.js';
 import type { RegisterChatRoutesDeps } from './routes/chat.js';
 import type { RegisterDeployRoutesDeps, RegisterDeploymentCheckRoutesDeps } from './routes/deploy.js';
+import type { RegisterDesignWorkflowRoutesDeps } from './routes/design-workflow.js';
 import type { RegisterFinalizeRoutesDeps, RegisterImportRoutesDeps, RegisterProjectExportRoutesDeps } from './import-export-routes.js';
 import type { RegisterGenuiRoutesDeps } from './routes/genui.js';
 import type { RegisterHandoffRoutesDeps } from './routes/handoff.js';
@@ -26,6 +27,7 @@ type AllRegisteredRouteDeps =
   & RegisterAutomationRoutesDeps
   & RegisterChatRoutesDeps
   & RegisterDeployRoutesDeps
+  & RegisterDesignWorkflowRoutesDeps
   & RegisterDeploymentCheckRoutesDeps
   & RegisterFinalizeRoutesDeps
   & RegisterGenuiRoutesDeps

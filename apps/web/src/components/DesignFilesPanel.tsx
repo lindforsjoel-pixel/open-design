@@ -20,6 +20,7 @@ import { getPluginFolderCandidates } from './design-files/pluginFolders';
 import { Icon } from './Icon';
 import { LiveArtifactBadges } from './LiveArtifactBadges';
 import { ProjectGitDialog } from './ProjectGitDialog';
+import { DesignWorkflowDialog } from './DesignWorkflowDialog';
 import { isRenderableSketchJson, SketchPreview } from './SketchPreview';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
@@ -342,6 +343,7 @@ export function DesignFilesPanel({
   const [currentDir, setCurrentDir] = useState<string>(() => navState?.currentDir ?? '');
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [gitDialogOpen, setGitDialogOpen] = useState(false);
+  const [designWorkflowDialogOpen, setDesignWorkflowDialogOpen] = useState(false);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the parent's create-target in sync with the folder being viewed, so
@@ -939,6 +941,17 @@ export function DesignFilesPanel({
                 <Icon name="fork" size={13} />
                 <span>{t('designFiles.git.title')}</span>
               </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setProjectMenuOpen(false);
+                  setDesignWorkflowDialogOpen(true);
+                }}
+              >
+                <Icon name="refresh" size={13} />
+                <span>{t('designWorkflow.title')}</span>
+              </button>
               {onCreateDesignSystemFromProject ? (
                 <button
                   type="button"
@@ -985,6 +998,9 @@ export function DesignFilesPanel({
 
   const gitDialog = gitDialogOpen ? (
     <ProjectGitDialog projectId={projectId} onClose={() => setGitDialogOpen(false)} />
+  ) : null;
+  const designWorkflowDialog = designWorkflowDialogOpen ? (
+    <DesignWorkflowDialog projectId={projectId} onClose={() => setDesignWorkflowDialogOpen(false)} />
   ) : null;
 
   const breadcrumbs = (
@@ -1408,6 +1424,7 @@ export function DesignFilesPanel({
         </div>
       ) : null}
       {gitDialog}
+      {designWorkflowDialog}
     </div>
   );
 }

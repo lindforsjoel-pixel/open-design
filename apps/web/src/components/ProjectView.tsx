@@ -41,6 +41,7 @@ import { normalizeCustomReason } from '@open-design/contracts/analytics';
 import {
   deletePreviewComment,
   fetchConnectorStatuses,
+  fetchDesignWorkflowStatus,
   fetchPreviewComments,
   fetchProjectDesignSystemPackageAudit,
   fetchLiveArtifacts,
@@ -1409,6 +1410,13 @@ export function ProjectView({
     detailedProject && detailedProject.updatedAt >= project.updatedAt ? detailedProject : project;
   const projectDesignSystemId = resolveProjectDesignSystemId(currentProject);
   const projectIsDesignSystemProject = isDesignSystemProject(currentProject);
+  useEffect(() => {
+    if (!projectDesignSystemId?.startsWith('user:')) return;
+    void fetchDesignWorkflowStatus(currentProject.id).catch(() => {
+      // Status remains available through the explicit Design workflow dialog;
+      // project selection initialization is intentionally best-effort.
+    });
+  }, [currentProject.id, projectDesignSystemId]);
   // Website-clone turns reproduce a whole multi-page site; auto-open should
   // land on the site entry (index.html), not the last-written subpage. See
   // `SelectAutoOpenOptions.preferSiteEntry`.

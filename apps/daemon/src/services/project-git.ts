@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+import { mkdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   ProjectGitChange,
@@ -53,6 +53,21 @@ function runGit(cwd: string, args: string[]): Promise<GitCommandResult> {
           missing: execError?.code === 'ENOENT',
         });
       },
+    );
+  });
+}
+
+function runGitBuffer(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: Buffer; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      args,
+      { cwd, maxBuffer: MAX_BUFFER_BYTES, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' } },
+      (error, stdout, stderr) => resolve({
+        ok: error == null,
+        stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ''),
+        stderr: Buffer.isBuffer(stderr) ? stderr.toString('utf8') : String(stderr ?? ''),
+      }),
     );
   });
 }
@@ -314,4 +329,150 @@ export async function commitProjectGitChanges(
     throw new ProjectGitError('Commit succeeded but its summary could not be read.', 'GIT_COMMAND_FAILED');
   }
   return { commit, status: await readProjectGitStatus(projectRoot) };
+}
+
+function validateBranchName(branchInput: unknown): string {
+  const branch = typeof branchInput === 'string' ? branchInput.trim() : '';
+  if (!branch || branch.length > 200 || branch.startsWith('-') || /[\0\r\n\s~^:?*\\\[]/.test(branch)) {
+    throw new ProjectGitError('Revision branch name is invalid.', 'INVALID_GIT_REQUEST');
+  }
+  return branch;
+}
+
+export async function createAndPushProjectGitRevision(
+  projectRoot: string,
+  branchInput: unknown,
+  messageInput: unknown,
+  pathsInput: unknown,
+): Promise<ProjectGitCommitResponse> {
+  const branch = validateBranchName(branchInput);
+  const before = await readProjectGitStatus(projectRoot);
+  if (!before.available) throw new ProjectGitError(before.error ?? 'Git is unavailable.', 'GIT_NOT_AVAILABLE');
+  if (!before.repository) throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  const remote = await runGit(projectRoot, ['remote', 'get-url', 'origin']);
+  if (!remote.ok || !remote.stdout.trim()) {
+    throw new ProjectGitError('The project needs an origin remote before Open Design can publish revisions.', 'GIT_COMMAND_FAILED');
+  }
+  const switched = await runGit(projectRoot, ['switch', '--create', branch]);
+  if (!switched.ok) {
+    throw new ProjectGitError(switched.stderr.trim() || `Unable to create revision branch ${branch}.`, 'GIT_COMMAND_FAILED');
+  }
+  const committed = await commitProjectGitChanges(projectRoot, messageInput, pathsInput);
+  const pushed = await runGit(projectRoot, ['push', '--set-upstream', 'origin', branch]);
+  if (!pushed.ok) {
+    throw new ProjectGitError(
+      pushed.stderr.trim() || `Revision ${committed.commit.shortHash} was committed locally but could not be pushed.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  return { commit: committed.commit, status: await readProjectGitStatus(projectRoot) };
+}
+
+export async function readProjectGitFileAtRevision(
+  projectRoot: string,
+  shaInput: unknown,
+  filePathInput: unknown,
+): Promise<Buffer | null> {
+  const sha = typeof shaInput === 'string' && /^[a-f0-9]{7,64}$/i.test(shaInput) ? shaInput : '';
+  const [filePath] = validateCommitPaths([filePathInput]);
+  if (!sha) throw new ProjectGitError('Revision SHA is invalid.', 'INVALID_GIT_REQUEST');
+  const canonicalProjectRoot = await realpath(projectRoot);
+  const rootResult = await runGit(canonicalProjectRoot, ['rev-parse', '--show-toplevel']);
+  if (!rootResult.ok) throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  const repositoryRoot = path.resolve(rootResult.stdout.trim());
+  const projectPrefix = path.relative(repositoryRoot, canonicalProjectRoot).replace(/\\/g, '/');
+  const repositoryPath = projectPrefix ? `${projectPrefix}/${filePath}` : filePath;
+  const result = await runGitBuffer(canonicalProjectRoot, ['show', `${sha}:${repositoryPath}`]);
+  return result.ok ? result.stdout : null;
+}
+
+export async function createProjectGitWorktree(
+  projectRoot: string,
+  worktreeRoot: string,
+  branchInput: unknown,
+): Promise<ProjectGitStatusResponse> {
+  const branch = validateBranchName(branchInput);
+  const source = await readProjectGitStatus(projectRoot);
+  if (!source.repository || !source.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  if (!source.clean) {
+    throw new ProjectGitError('The source checkout must be clean before Open Design creates its managed worktree.', 'GIT_COMMAND_FAILED');
+  }
+  try {
+    const existing = await readProjectGitStatus(worktreeRoot);
+    if (existing.repository && existing.branch === branch) return existing;
+  } catch {
+    // The managed worktree does not exist yet.
+  }
+  await mkdir(path.dirname(worktreeRoot), { recursive: true });
+  const branchExists = await runGit(source.repositoryRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+  const added = await runGit(source.repositoryRoot, branchExists.ok
+    ? ['worktree', 'add', worktreeRoot, branch]
+    : ['worktree', 'add', '-b', branch, worktreeRoot, 'HEAD']);
+  if (!added.ok) {
+    throw new ProjectGitError(added.stderr.trim() || `Unable to create managed worktree ${worktreeRoot}.`, 'GIT_COMMAND_FAILED');
+  }
+  return readProjectGitStatus(worktreeRoot);
+}
+
+export async function publishProjectGitRevision(
+  projectRoot: string,
+  shaInput: unknown,
+  baseBranchInput: unknown = 'main',
+): Promise<ProjectGitStatusResponse> {
+  const sha = typeof shaInput === 'string' && /^[a-f0-9]{7,64}$/i.test(shaInput) ? shaInput : '';
+  const baseBranch = validateBranchName(baseBranchInput);
+  if (!sha) throw new ProjectGitError('Revision SHA is invalid.', 'INVALID_GIT_REQUEST');
+  const status = await readProjectGitStatus(projectRoot);
+  if (!status.repository || !status.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  if (!status.clean) {
+    throw new ProjectGitError('The design-system worktree must be clean before Publish.', 'GIT_COMMAND_FAILED');
+  }
+  const fetched = await runGit(status.repositoryRoot, ['fetch', 'origin', baseBranch]);
+  if (!fetched.ok) {
+    throw new ProjectGitError(fetched.stderr.trim() || `Unable to fetch origin/${baseBranch}.`, 'GIT_COMMAND_FAILED');
+  }
+  const commitExists = await runGit(status.repositoryRoot, ['cat-file', '-e', `${sha}^{commit}`]);
+  if (!commitExists.ok) throw new ProjectGitError(`Revision ${sha} is not available locally.`, 'INVALID_GIT_REQUEST');
+  const fastForward = await runGit(status.repositoryRoot, [
+    'merge-base', '--is-ancestor', `origin/${baseBranch}`, sha,
+  ]);
+  if (!fastForward.ok) {
+    throw new ProjectGitError(
+      `Publish stopped because ${sha.slice(0, 8)} is not a fast-forward of origin/${baseBranch}. Rebase the design revision first.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const pushed = await runGit(status.repositoryRoot, ['push', 'origin', `${sha}:refs/heads/${baseBranch}`]);
+  if (!pushed.ok) {
+    throw new ProjectGitError(pushed.stderr.trim() || `Unable to publish ${sha.slice(0, 8)} to ${baseBranch}.`, 'GIT_COMMAND_FAILED');
+  }
+  return readProjectGitStatus(projectRoot);
+}
+
+export async function projectGitRevisionIsAncestor(
+  projectRoot: string,
+  shaInput: unknown,
+  refInput: unknown,
+  options: { fetchOriginBranch?: string } = {},
+): Promise<boolean> {
+  const sha = typeof shaInput === 'string' && /^[a-f0-9]{7,64}$/i.test(shaInput) ? shaInput : '';
+  const ref = typeof refInput === 'string' && /^[a-zA-Z0-9_./-]+$/.test(refInput) ? refInput : '';
+  if (!sha || !ref) throw new ProjectGitError('Revision verification request is invalid.', 'INVALID_GIT_REQUEST');
+  const status = await readProjectGitStatus(projectRoot);
+  if (!status.repository || !status.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  if (options.fetchOriginBranch) {
+    const branch = validateBranchName(options.fetchOriginBranch);
+    const fetched = await runGit(status.repositoryRoot, ['fetch', 'origin', branch]);
+    if (!fetched.ok) {
+      throw new ProjectGitError(fetched.stderr.trim() || `Unable to fetch origin/${branch}.`, 'GIT_COMMAND_FAILED');
+    }
+  }
+  const result = await runGit(status.repositoryRoot, ['merge-base', '--is-ancestor', sha, ref]);
+  return result.ok;
 }

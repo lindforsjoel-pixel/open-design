@@ -6,7 +6,10 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   commitProjectGitChanges,
+  createAndPushProjectGitRevision,
+  createProjectGitWorktree,
   parseProjectGitStatus,
+  publishProjectGitRevision,
   readProjectGitStatus,
 } from '../../src/services/project-git.js';
 
@@ -92,5 +95,73 @@ describe('project Git service', () => {
 
     expect(runGit(repo, ['show', '--pretty=', '--name-only', 'HEAD']).trim()).toBe('selected*.txt');
     expect((await readProjectGitStatus(repo)).changes.map((change) => change.path)).toEqual(['selected-other.txt']);
+  });
+
+  it('creates an isolated revision branch, commits selected files, and pushes it', async () => {
+    const remote = mkdtempSync(path.join(tmpdir(), 'od-project-git-remote-'));
+    tempDirs.push(remote);
+    runGit(remote, ['init', '--bare']);
+    const repo = makeRepo();
+    await writeFile(path.join(repo, 'tokens.css'), ':root { --brand: red; }\n');
+    await writeFile(path.join(repo, 'notes.txt'), 'one\n');
+    runGit(repo, ['add', '-A']);
+    runGit(repo, ['commit', '-m', 'initial']);
+    runGit(repo, ['remote', 'add', 'origin', remote]);
+    await writeFile(path.join(repo, 'tokens.css'), ':root { --brand: blue; }\n');
+    await writeFile(path.join(repo, 'notes.txt'), 'two\n');
+
+    const result = await createAndPushProjectGitRevision(
+      repo,
+      'open-design/run-test',
+      'Update design system (run-test)',
+      ['tokens.css'],
+    );
+
+    expect(result.status.branch).toBe('open-design/run-test');
+    expect(result.status.upstream).toBe('origin/open-design/run-test');
+    expect(runGit(repo, ['show', '--pretty=', '--name-only', 'HEAD']).trim()).toBe('tokens.css');
+    expect(runGit(repo, ['status', '--short']).trim()).toBe('M notes.txt');
+    expect(runGit(remote, ['rev-parse', 'refs/heads/open-design/run-test']).trim()).toBe(result.commit.hash);
+  });
+
+  it('creates a managed worktree without switching the source checkout', async () => {
+    const repo = makeRepo();
+    await writeFile(path.join(repo, 'DESIGN.md'), '# Design\n');
+    runGit(repo, ['add', '-A']);
+    runGit(repo, ['commit', '-m', 'initial']);
+    const originalBranch = runGit(repo, ['branch', '--show-current']).trim();
+    const worktree = mkdtempSync(path.join(tmpdir(), 'od-project-worktree-parent-'));
+    tempDirs.push(worktree);
+    const target = path.join(worktree, 'workspace');
+
+    const status = await createProjectGitWorktree(repo, target, 'open-design/workspace-test');
+
+    expect(status.projectRoot).toBe(target);
+    expect(status.branch).toBe('open-design/workspace-test');
+    expect(runGit(repo, ['branch', '--show-current']).trim()).toBe(originalBranch);
+    expect(runGit(target, ['rev-parse', 'HEAD']).trim()).toBe(runGit(repo, ['rev-parse', 'HEAD']).trim());
+  });
+
+  it('publishes an exact fast-forward revision without switching worktrees', async () => {
+    const remote = mkdtempSync(path.join(tmpdir(), 'od-project-publish-remote-'));
+    tempDirs.push(remote);
+    runGit(remote, ['init', '--bare']);
+    const repo = makeRepo();
+    await writeFile(path.join(repo, 'DESIGN.md'), '# One\n');
+    runGit(repo, ['add', '-A']);
+    runGit(repo, ['commit', '-m', 'initial']);
+    runGit(repo, ['branch', '-M', 'main']);
+    runGit(repo, ['remote', 'add', 'origin', remote]);
+    runGit(repo, ['push', '-u', 'origin', 'main']);
+    runGit(repo, ['switch', '-c', 'open-design/run-publish']);
+    await writeFile(path.join(repo, 'DESIGN.md'), '# Two\n');
+    runGit(repo, ['add', '-A']);
+    runGit(repo, ['commit', '-m', 'update']);
+    const revision = runGit(repo, ['rev-parse', 'HEAD']).trim();
+
+    const status = await publishProjectGitRevision(repo, revision);
+
+    expect(status.branch).toBe('open-design/run-publish');
+    expect(runGit(remote, ['rev-parse', 'refs/heads/main']).trim()).toBe(revision);
   });
 });

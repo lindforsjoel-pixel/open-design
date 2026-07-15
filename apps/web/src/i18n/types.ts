@@ -3294,6 +3294,27 @@ export interface Dict {
   'designFiles.git.commitPlaceholder': string;
   'designFiles.git.commitSelected': string;
   'designFiles.git.committed': string;
+  'designWorkflow.title': string;
+  'designWorkflow.description': string;
+  'designWorkflow.loading': string;
+  'designWorkflow.status.upToDate': string;
+  'designWorkflow.status.updatedAutomatically': string;
+  'designWorkflow.status.updateNeeded': string;
+  'designWorkflow.status.syncFailed': string;
+  'designWorkflow.status.pinned': string;
+  'designWorkflow.role': string;
+  'designWorkflow.system': string;
+  'designWorkflow.subscribers': string;
+  'designWorkflow.applied': string;
+  'designWorkflow.target': string;
+  'designWorkflow.updateHint': string;
+  'designWorkflow.revisionPlaceholder': string;
+  'designWorkflow.rollback': string;
+  'designWorkflow.refresh': string;
+  'designWorkflow.resume': string;
+  'designWorkflow.updateAll': string;
+  'designWorkflow.publish': string;
+  'designWorkflow.updateAllResult': string;
 
   'designFiles.previewOpen': string;
   'designFiles.previewClose': string;

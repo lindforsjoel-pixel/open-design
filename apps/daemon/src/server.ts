@@ -605,6 +605,8 @@ import { registerDeployRoutes, registerDeploymentCheckRoutes } from './routes/de
 import { registerMediaRoutes } from './routes/media.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './routes/project/index.js';
 import { registerProjectGitRoutes } from './routes/project-git.js';
+import { registerDesignWorkflowRoutes } from './routes/design-workflow.js';
+import { createDesignWorkflowService } from './design-systems/workflow.js';
 import { registerVelaRoutes } from './routes/vela.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerHandoffRoutes } from './routes/handoff.js';
@@ -2729,6 +2731,15 @@ export async function startServer({
     listTabs,
     setTabs,
   };
+  const designWorkflow = createDesignWorkflowService({
+    db,
+    projectsRoot: PROJECTS_DIR,
+    runtimeDataDir: RUNTIME_DATA_DIR,
+    getProject,
+    listProjects,
+    updateProject,
+    resolveProjectDir,
+  });
   const conversationDeps = {
     insertConversation,
     getConversation,
@@ -2982,6 +2993,10 @@ export async function startServer({
     paths: pathDeps,
     projectStore: projectStoreDeps,
     projectFiles: projectFileDeps,
+  });
+  registerDesignWorkflowRoutes(app, {
+    http: httpDeps,
+    designWorkflow,
   });
   registerTerminalRoutes(app, {
     db,
@@ -3506,6 +3521,7 @@ export async function startServer({
     freeformDeckSignal,
     mediaHintSignal,
     platformHintSignal,
+    workflowPrompt,
   }) => {
     const project =
       typeof projectId === 'string' && projectId
@@ -3813,6 +3829,7 @@ export async function startServer({
     let designSystemCraftExemptions = [];
     let activeDesignSystemId = null;
     let designSystemDigest = null;
+    let designWorkflowInstructions = '';
     if (effectiveDesignSystemId) {
       let systems = await listAllDesignSystems();
       let summary = systems.find((s) => s.id === effectiveDesignSystemId);
@@ -3860,6 +3877,41 @@ export async function startServer({
             importMode: designSystemImportMode,
           });
         }
+      }
+    }
+
+    if (project?.id && effectiveDesignSystemId?.startsWith('user:')) {
+      try {
+        const useTargetRevision = typeof workflowPrompt === 'string'
+          && workflowPrompt.trim().toLowerCase().startsWith('/update');
+        const workflowStatus = await designWorkflow.statusForProject(project.id);
+        if (workflowStatus.role === 'subscriber') {
+          const revisionBody = await designWorkflow.readAppliedFile(
+            project.id,
+            'DESIGN.md',
+            useTargetRevision,
+          );
+          if (revisionBody) {
+            designSystemBody = revisionBody;
+            designSystemDigest = digestDesignSystemContext({
+              id: effectiveDesignSystemId,
+              title: designSystemTitle,
+              body: revisionBody,
+              usageMd: designSystemUsageMd,
+              tokensCss: designSystemTokensCss,
+              componentsManifest: designSystemComponentsManifest,
+              fixtureHtml: designSystemFixtureHtml,
+              pullIndex: designSystemPullIndex,
+              importMode: designSystemImportMode,
+            });
+          }
+        }
+        designWorkflowInstructions = await designWorkflow.promptContext(
+          project.id,
+          typeof workflowPrompt === 'string' ? workflowPrompt : '',
+        );
+      } catch (error) {
+        console.warn('[design-workflow] prompt context unavailable', error);
       }
     }
 
@@ -4067,6 +4119,9 @@ export async function startServer({
       ...(pluginBlock ? { pluginBlock } : {}),
       ...(activeStageBlocks ? { activeStageBlocks } : {}),
       userInstructions,
+      projectInstructions: [project?.customInstructions, designWorkflowInstructions]
+        .filter((value) => typeof value === 'string' && value.trim().length > 0)
+        .join('\n\n'),
       freeformDeckSignal,
       mediaHintSignal,
       platformHintSignal,
@@ -4580,6 +4635,9 @@ export async function startServer({
         freeformDeckSignal: detectDeckIntentSignal(message, currentPrompt),
         mediaHintSignal: detectMediaIntentSignal(message, currentPrompt),
         platformHintSignal: detectPlatformIntentSignal(message, currentPrompt),
+        workflowPrompt: typeof currentPrompt === 'string' && currentPrompt
+          ? currentPrompt
+          : message,
       });
 
     run.designSystemId = designSystemSelection?.id ?? null;
@@ -8100,6 +8158,7 @@ export async function startServer({
       pinAssistantMessageOnRunCreate,
       reconcileAssistantMessageOnRunEnd,
     },
+    designWorkflow,
   });
 
   // Each routine fire resolves an agent, prepares project/conversation state,
@@ -8506,6 +8565,7 @@ export async function startServer({
     agents: agentDeps,
     critique: critiqueDeps,
     openDesignPublicMetadata,
+    designWorkflow,
     lifecycle: { isDaemonShuttingDown: () => daemonShuttingDown },
   });
 

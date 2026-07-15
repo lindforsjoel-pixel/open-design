@@ -30,6 +30,7 @@ import {
   readCodexRolloutFirstCall,
 } from '../codex-rollout-usage.js';
 import type { ConnectorService } from '../connectors/service.js';
+import type { DesignWorkflowService } from '../design-systems/workflow.js';
 import {
   getConversation,
   getProject,
@@ -313,6 +314,7 @@ export interface RegisterRunRoutesDeps {
       run: ChatRun,
     ) => void;
   };
+  designWorkflow: DesignWorkflowService;
 }
 
 type TerminalRunStatus = RunStatusForAnalytics & {
@@ -483,6 +485,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     pinAssistantMessageOnRunCreate,
     reconcileAssistantMessageOnRunEnd,
   } = ctx.messages;
+  const designWorkflow = ctx.designWorkflow;
 
   function runToolBundleDeliveryTargetForProject(
     projectId: unknown,
@@ -726,6 +729,11 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[plugins] skill candidate hook setup failed', err);
       }
     }
+    if (run.projectId) {
+      await designWorkflow.captureRunStart(run.id, run.projectId).catch((error) => {
+        console.warn('[design-workflow] unable to capture run baseline', error);
+      });
+    }
     design.runs.start(run, () => startChatRun(meta, run));
 
     const reqBody = requestBody;
@@ -738,6 +746,23 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     // ai_refined even when analytics is unavailable or disabled.
     const hintDsEnrichment = analyticsHints.dsEnrichment === true;
     const requestProjectId = typeof reqBody.projectId === 'string' ? reqBody.projectId : null;
+    if (requestProjectId) {
+      const workflowPrompt = typeof reqBody.currentPrompt === 'string'
+        ? reqBody.currentPrompt
+        : typeof reqBody.message === 'string'
+          ? reqBody.message
+          : '';
+      design.runs.wait(run).then((status: TerminalRunStatus) =>
+        designWorkflow.completeRun({
+          runId: run.id,
+          projectId: requestProjectId,
+          prompt: workflowPrompt,
+          succeeded: runResultFromStatus(status.status) === 'success',
+        }),
+      ).catch((error) => {
+        console.warn('[design-workflow] run completion hook failed', error);
+      });
+    }
     if (hintDsEnrichment && requestProjectId) {
       design.runs.wait(run).then((status: TerminalRunStatus) => {
         if (runResultFromStatus(status.status) !== 'success') return;
