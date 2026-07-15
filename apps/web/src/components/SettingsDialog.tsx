@@ -390,6 +390,12 @@ interface Props {
    * incremental save, not a final commit.
    */
   onPersist: (cfg: AppConfig, options?: { forceMediaProviderSync?: boolean }) => Promise<void> | void;
+  /**
+   * Non-optimistic write for the daemon-owned silent-update preference.
+   * Settings → About uses this instead of the generic autosave path so a
+   * failed `/api/app-config` cannot leave app-wide config on the rejected value.
+   */
+  onSilentUpdatePreferenceChange?: (allowSilentUpdates: boolean) => Promise<void>;
   onDraftChange?: (cfg: AppConfig) => void;
   /**
    * Persist the Composio API key separately from the broader autosave
@@ -1330,6 +1336,7 @@ export function SettingsDialog({
   initialSection = 'execution',
   initialHighlight = null,
   onPersist,
+  onSilentUpdatePreferenceChange,
   onPersistComposioKey,
   composioConfigLoading = false,
   onClose,
@@ -3035,6 +3042,11 @@ export function SettingsDialog({
   // Skip the very first effect tick so just opening the dialog doesn't
   // appear to "save" anything before the user has touched a field.
   const autosaveSkipFirstRef = useRef(true);
+  // Silent-update toggles use a dedicated non-optimistic path; skip the next
+  // autosave effect tick so we do not double-write through handleConfigPersist.
+  const suppressNextAutosaveRef = useRef(false);
+  const silentUpdateWriteTokenRef = useRef(0);
+  const [silentUpdateBusy, setSilentUpdateBusy] = useState(false);
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveSavedTimerRef = useRef<number | null>(null);
   const autosaveRetryTimerRef = useRef<number | null>(null);
@@ -3055,6 +3067,10 @@ export function SettingsDialog({
     if (autosaveSkipFirstRef.current) {
       autosaveSkipFirstRef.current = false;
       autosaveLastSavedRef.current = cfg;
+      return;
+    }
+    if (suppressNextAutosaveRef.current) {
+      suppressNextAutosaveRef.current = false;
       return;
     }
     setAutosaveStatus('pending');
@@ -5669,6 +5685,7 @@ export function SettingsDialog({
                   <input
                     checked={cfg.allowSilentUpdates === true}
                     data-testid="settings-allow-silent-updates"
+                    disabled={silentUpdateBusy}
                     type="checkbox"
                     onChange={(event) => {
                       // Capture before setState: React clears event.currentTarget
@@ -5676,10 +5693,53 @@ export function SettingsDialog({
                       // run later when SettingsDialog already has pending lanes
                       // (about-updater status, autosave indicator, etc.).
                       const allowSilentUpdates = event.currentTarget.checked;
+                      const previous = cfg.allowSilentUpdates;
+                      // Dedicated non-optimistic path: do not flush through
+                      // handleConfigPersist (which setConfig before daemon write).
+                      // Serialize via busy + write token so a slow earlier save
+                      // cannot re-apply UI after a later toggle.
+                      const writeToken = ++silentUpdateWriteTokenRef.current;
+                      suppressNextAutosaveRef.current = true;
                       setCfg((current) => ({
                         ...current,
                         allowSilentUpdates,
                       }));
+                      if (onSilentUpdatePreferenceChange == null) return;
+                      setSilentUpdateBusy(true);
+                      void (async () => {
+                        try {
+                          await onSilentUpdatePreferenceChange(allowSilentUpdates);
+                          if (writeToken !== silentUpdateWriteTokenRef.current) return;
+                          // Only advance the baseline for this daemon-owned field.
+                          // Spreading autosaveLatestRef would stamp any concurrent
+                          // draft (theme, accent, …) as already saved and let the
+                          // generic autosave skip a real onPersist for that edit.
+                          autosaveLastSavedRef.current = {
+                            ...autosaveLastSavedRef.current,
+                            allowSilentUpdates,
+                          };
+                          setAutosaveStatus('saved');
+                          if (autosaveSavedTimerRef.current != null) {
+                            window.clearTimeout(autosaveSavedTimerRef.current);
+                          }
+                          autosaveSavedTimerRef.current = window.setTimeout(() => {
+                            autosaveSavedTimerRef.current = null;
+                            setAutosaveStatus((curr) => (curr === 'saved' ? 'idle' : curr));
+                          }, 1800);
+                        } catch {
+                          if (writeToken !== silentUpdateWriteTokenRef.current) return;
+                          suppressNextAutosaveRef.current = true;
+                          setCfg((current) => ({
+                            ...current,
+                            allowSilentUpdates: previous,
+                          }));
+                          setAutosaveStatus('error');
+                        } finally {
+                          if (writeToken === silentUpdateWriteTokenRef.current) {
+                            setSilentUpdateBusy(false);
+                          }
+                        }
+                      })();
                     }}
                   />
                   <span className="settings-about-toggle-copy">

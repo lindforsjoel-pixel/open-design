@@ -142,6 +142,7 @@ import { LiveArtifactBadges } from './LiveArtifactBadges';
 import { MissingBrandFontsBanner } from './MissingBrandFontsBanner';
 import { LibraryPicker } from './LibraryPicker';
 import { QuestionsPanel } from './QuestionsPanel';
+import { PreviewRunStatusBar } from './PreviewRunStatusBar';
 import { QuickSwitcher } from './QuickSwitcher';
 import { SketchEditor } from './SketchEditor';
 import { SketchEnginePrewarm } from './SketchEnginePrewarm';
@@ -272,7 +273,8 @@ interface Props {
   messages?: ChatMessage[];
   artifactHtml?: string | null;
   conversationError?: string | null;
-  onRetry?: (message: ChatMessage) => void;
+  /** Restores the chat pane when the compact preview hint requests details. */
+  onViewRunDetails?: (message: ChatMessage) => void;
   // Contextual failure recovery, mirrored from the chat error card so the
   // preview surface can offer the same one-click fix (AMR authorize, terminal
   // sign-in) instead of a bare retry.
@@ -1281,6 +1283,7 @@ export function FileWorkspace({
   onActiveContextChange,
   onWorkspaceContextsChange,
   messages = [],
+  onViewRunDetails,
   conversationId,
   headerActions,
   questionForm = null,
@@ -1452,6 +1455,10 @@ export function FileWorkspace({
     () => files.filter((file) => !isLiveArtifactImplementationPath(file.name)),
     [files],
   );
+
+  // Known-file set for the side chat's file-link routing — same shape
+  // ProjectView feeds its primary ChatPane.
+  const sideChatFileNames = useMemo(() => new Set(files.map((file) => file.name)), [files]);
 
   const projectPagePresets = useMemo(
     () => [
@@ -2926,6 +2933,12 @@ export function FileWorkspace({
     return liveArtifactEntries.find((entry) => entry.tabId === activeTab) ?? null;
   }, [activeTab, liveArtifactEntries]);
 
+  // The delivery hint belongs to the main design-preview surface only. Browser,
+  // terminal, questions, design-system, and side-chat tabs carry their own
+  // context and must not inherit status/analytics from the primary chat.
+  const showPreviewRunStatus =
+    activeTab === DESIGN_FILES_TAB || activeLiveArtifact !== null || activeFile !== null;
+
   // Identity-stable props for the memoized FileViewer. Without these, every
   // FileWorkspace state change (closing an adjacent tab, drag hover, launcher
   // toggles) would hand FileViewer fresh object/function identities and drag
@@ -3438,6 +3451,7 @@ export function FileWorkspace({
       className={[
         'workspace',
         designSystemProject ? 'has-design-system-tab' : '',
+        browserSnapshotToast ? 'has-browser-snapshot-toast' : '',
       ].filter(Boolean).join(' ')}
       data-testid="file-workspace"
     >
@@ -3940,6 +3954,8 @@ export function FileWorkspace({
             agentsById={chatAgentsById}
             locale={chatLocale ?? 'en'}
             projectFiles={visibleFiles}
+            projectFileNames={sideChatFileNames}
+            projectResolvedDir={resolvedDir}
             conversations={conversations}
             onSelectConversation={onSelectConversation ?? (() => {})}
             onDeleteConversation={onDeleteConversation ?? (() => {})}
@@ -4010,6 +4026,16 @@ export function FileWorkspace({
             .
           </div>
         )}
+        {showPreviewRunStatus ? (
+          <div className="ws-preview-run-status-slot">
+            <PreviewRunStatusBar
+              projectId={projectId}
+              conversationId={conversationId}
+              messages={messages}
+              onViewDetails={onViewRunDetails}
+            />
+          </div>
+        ) : null}
       </div>
       <PageCreatorDialog
         open={pageCreatorOpen}

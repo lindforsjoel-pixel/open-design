@@ -17,6 +17,7 @@ import {
   runDomToPptx,
   scrollStitchGeometry,
   scrollStitchRowOffset,
+  showSlide,
   shouldCapturePageAsJpeg,
   shouldCaptureAsDeck,
   solidBgraBuffer,
@@ -174,6 +175,18 @@ describe('deck capture DOM prep', () => {
       runtimeFrame: symbol | undefined;
       style = new FakeStyle();
       classList = { toggle: () => true };
+      private readonly attributes = new Set<string>();
+
+      toggleAttribute(name: string, force?: boolean): boolean {
+        const on = force === undefined ? !this.attributes.has(name) : force;
+        if (on) this.attributes.add(name);
+        else this.attributes.delete(name);
+        return on;
+      }
+
+      hasAttribute(name: string): boolean {
+        return this.attributes.has(name);
+      }
 
       constructor(
         private rect: { x: number; y: number } = { x: 32, y: 24 },
@@ -359,6 +372,121 @@ describe('deck capture DOM prep', () => {
     } finally {
       restoreActiveSlideCapture();
       Object.assign(globalThis, { document: previousDocument });
+    }
+  });
+
+  // Regression for issue #990 ("导出PPT多页时后续页面内容丢失"): the injected
+  // <deck-stage> fallback (packages/contracts/src/runtime/deck-stage-fallback.ts)
+  // hides every slotted slide with `::slotted(*){visibility:hidden!important}` and
+  // reveals only the one carrying the `data-od-deck-active` attribute. showSlide
+  // picks the page to capture, so it must set that attribute on the selected slide;
+  // the pre-fix code toggled classes and set non-important inline styles only, so
+  // every slide but the first captured blank (one populated page followed by blanks).
+  test('per-slide selection marks the deck-stage fallback active attribute', async () => {
+    class FakeStyle {
+      private readonly values = new Map<string, { priority: string; value: string }>();
+      setProperty(name: string, value: string, priority = ''): void {
+        this.values.set(name, { priority, value });
+      }
+      getPropertyValue(name: string): string {
+        return this.values.get(name)?.value ?? '';
+      }
+      getPropertyPriority(name: string): string {
+        return this.values.get(name)?.priority ?? '';
+      }
+      // Plain `el.style.foo = x` assignments (how the pre-fix code showed slides)
+      // are non-`!important`, mirrored here by recording an empty priority.
+      set animation(value: string) {
+        this.setProperty('animation', value);
+      }
+      set opacity(value: string) {
+        this.setProperty('opacity', value);
+      }
+      set pointerEvents(value: string) {
+        this.setProperty('pointer-events', value);
+      }
+      set transition(value: string) {
+        this.setProperty('transition', value);
+      }
+      set visibility(value: string) {
+        this.setProperty('visibility', value);
+      }
+      set zIndex(value: string) {
+        this.setProperty('z-index', value);
+      }
+    }
+    class Slide {
+      style = new FakeStyle();
+      classList = { toggle: () => true };
+      private readonly attributes = new Set<string>();
+      closest(): null {
+        return null;
+      }
+      getBoundingClientRect(): DOMRect {
+        return { x: 0, y: 0, width: 1920, height: 1080 } as DOMRect;
+      }
+      toggleAttribute(name: string, force?: boolean): boolean {
+        const on = force === undefined ? !this.attributes.has(name) : force;
+        if (on) this.attributes.add(name);
+        else this.attributes.delete(name);
+        return on;
+      }
+      hasAttribute(name: string): boolean {
+        return this.attributes.has(name);
+      }
+    }
+
+    // The fallback (packages/contracts/src/runtime/deck-stage-fallback.ts) hides
+    // slotted slides with `::slotted(*){visibility:hidden!important}` in its shadow
+    // root and reveals ONLY `::slotted([data-od-deck-active])`. Because a shadow
+    // `!important` declaration beats an outer inline `!important` one (for
+    // `!important`, the inner tree wins BEFORE inline precedence is considered —
+    // verified in a real browser), inline `visibility:visible !important` on a
+    // slotted slide does NOT reveal it. Under the fallback a slide renders iff it
+    // carries `data-od-deck-active` — that attribute toggle is the mechanism this
+    // unit test guards. (The inline `!important` override handles the OTHER runtimes
+    // — real deck-stage.js with non-`!important` `::slotted`, and class-based decks
+    // — where importance wins outright; that path is covered separately below.)
+    const revealedByFallback = (slide: Slide): boolean => slide.hasAttribute('data-od-deck-active');
+
+    const slides = [new Slide(), new Slide(), new Slide()];
+    const previousDocument = globalThis.document;
+    const previousRaf = globalThis.requestAnimationFrame;
+    Object.assign(globalThis, {
+      document: { getElementById: () => null, querySelectorAll: () => slides },
+      requestAnimationFrame: (cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      },
+    });
+    try {
+      // Export the SECOND page (index 1) — the one the bug left blank.
+      await showSlide('.slide, [data-screen-label], .deck-slide, .ppt-slide', 1);
+      // Fallback mechanism: exactly the selected slide is marked, so only it renders.
+      expect(revealedByFallback(slides[1])).toBe(true);
+      expect(revealedByFallback(slides[0])).toBe(false);
+      expect(revealedByFallback(slides[2])).toBe(false);
+      // NB: we intentionally do NOT assert `data-deck-active` is absent — the
+      // fallback contract only requires `data-od-deck-active` on the selected
+      // slide, and the real export freezes descendant animations in
+      // prepareDeckStage() before selection, so an implementation that also set
+      // `data-deck-active` would still be correct. Constraining it here would fail
+      // a valid future fix for a reason the fallback runtime does not care about.
+      // Inline override for the non-shadow / non-`!important`-hide runtimes: the
+      // selected slide is forced visible and the rest hidden. This is a DIFFERENT
+      // mechanism from the fallback attribute above — it wins for those runtimes by
+      // importance, and does not (need to) beat the fallback's shadow `!important`.
+      expect(slides[1].style.getPropertyValue('visibility')).toBe('visible');
+      expect(slides[1].style.getPropertyPriority('visibility')).toBe('important');
+      for (const off of [slides[0], slides[2]]) {
+        expect(off.style.getPropertyValue('visibility')).toBe('hidden');
+        expect(off.style.getPropertyPriority('visibility')).toBe('important');
+      }
+    } finally {
+      Object.assign(globalThis, {
+        document: previousDocument,
+        requestAnimationFrame: previousRaf,
+      });
     }
   });
 });

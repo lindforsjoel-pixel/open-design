@@ -1559,6 +1559,24 @@ export function ProjectView({
   const [commentInspectorActive, setCommentInspectorActive] = useState(false);
   const commentInspectorPortalId = useId();
   const leftInspectorActive = commentInspectorActive;
+  const handleViewRunDetails = useCallback((message: ChatMessage) => {
+    // Restore the primary chat even if a comment inspector or focus mode was
+    // active, then move directly to the failure that owns this hint.
+    setCommentInspectorActive(false);
+    setWorkspaceFocused(false);
+
+    const focusFailure = () => {
+      const target = document.getElementById(`assistant-message-${message.id}`);
+      if (!target) return;
+      target.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+      target.focus({ preventScroll: true });
+    };
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(focusFailure);
+    } else {
+      window.setTimeout(focusFailure, 0);
+    }
+  }, []);
   // Per-session override for the BYOK chat's generate_image tool. Seeded once
   // from the New Project → Media model pick (project.metadata.imageModel) — but
   // only when that pick belongs to the active BYOK provider (see
@@ -3157,13 +3175,6 @@ export function ProjectView({
         url,
         nonce,
         attentionAction: 'download-page',
-      });
-      setProjectActionsToast({
-        message: t('chat.brandBrowserAssistDownloadGuideTitle'),
-        details: t('chat.brandBrowserAssistDownloadGuideDetails'),
-        tone: 'default',
-        ttlMs: 12000,
-        scope: 'chat-pane',
       });
       return { ok: true, action: 'opened' };
     },
@@ -8194,7 +8205,7 @@ export function ProjectView({
           snapshotMessage(liveSnapshot) ||
           fallbackMessage ||
           t('chat.brandBrowserAssistReadFailed'),
-        details: t('chat.brandBrowserAssistDownloadGuideDetails'),
+        details: null,
         tone: 'error',
         ttlMs: 7000,
         scope: 'chat-pane',
@@ -8734,6 +8745,7 @@ export function ProjectView({
               hasActiveDesignSystem={!!projectDesignSystemId}
               activeDesignSystem={chatDesignSystemSummary}
               projectFileNames={projectFileNames}
+              projectResolvedDir={projectDetail.resolvedDir}
               skills={skills}
               onEnsureProject={handleEnsureProject}
               previewComments={previewComments}
@@ -8997,7 +9009,7 @@ export function ProjectView({
           messages={messages}
           artifactHtml={artifact?.html}
           conversationError={error}
-          onRetry={handleRetry}
+          onViewRunDetails={handleViewRunDetails}
           onAuthorizeAndRetry={handleSwitchToAmrAndRetry}
           onLaunchTerminalAuth={handleLaunchAntigravityOauth}
           conversationId={activeConversationId}
