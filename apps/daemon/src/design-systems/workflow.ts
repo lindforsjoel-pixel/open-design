@@ -16,6 +16,7 @@ import type {
 import {
   createAndPushProjectGitRevision,
   createProjectGitWorktree,
+  prepareProjectGitRevisionBase,
   projectGitRevisionIsAncestor,
   publishProjectGitRevision,
   readProjectGitFileAtRevision,
@@ -37,6 +38,15 @@ const IGNORED_DIRS = new Set([
 ]);
 const MAX_FILES = 10_000;
 const HASH_MAX_BYTES = 1024 * 1024;
+const PROPAGATION_TEXT_EXTENSIONS = new Set([
+  '.css', '.html', '.htm', '.json', '.js', '.jsx', '.md', '.mjs', '.scss', '.ts', '.tsx', '.txt', '.yaml', '.yml',
+]);
+
+export interface GovernedTokenUpdate {
+  name: string;
+  beforeValues: string[];
+  afterValues: string[];
+}
 
 interface WorkflowFingerprint {
   size: number;
@@ -438,6 +448,91 @@ export function classifyDesignWorkflowChanges(
   }) ? 'compatible' : 'structural';
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function parseGovernedCssTokens(content: string): Map<string, string[]> {
+  const tokens = new Map<string, string[]>();
+  for (const match of content.matchAll(/--([a-zA-Z0-9_-]+)\s*:\s*([^;{}]+);/g)) {
+    const name = match[1];
+    const value = match[2]?.trim();
+    if (!name || !value) continue;
+    const values = tokens.get(name) ?? [];
+    values.push(value);
+    tokens.set(name, values);
+  }
+  return tokens;
+}
+
+export function governedTokenUpdates(beforeCss: string, afterCss: string): GovernedTokenUpdate[] {
+  const before = parseGovernedCssTokens(beforeCss);
+  const after = parseGovernedCssTokens(afterCss);
+  return [...after.entries()].flatMap(([name, afterValues]) => {
+    const beforeValues = before.get(name) ?? [];
+    return JSON.stringify(beforeValues) === JSON.stringify(afterValues)
+      ? []
+      : [{ name, beforeValues, afterValues }];
+  });
+}
+
+function canonicalTokenValue(update: GovernedTokenUpdate): string {
+  return update.afterValues.at(-1) ?? '';
+}
+
+export function rewriteGovernedTokens(
+  content: string,
+  updates: GovernedTokenUpdate[],
+): { content: string; replacements: number } {
+  let rewritten = content;
+  let replacements = 0;
+  for (const update of [...updates].sort((left, right) => right.name.length - left.name.length)) {
+    const escaped = escapeRegExp(update.name);
+    const declarationPattern = new RegExp(`(--${escaped}\\s*:\\s*)([^;{}]+)(;)`, 'g');
+    const declarationCount = [...rewritten.matchAll(declarationPattern)].length;
+    let declarationIndex = 0;
+    rewritten = rewritten.replace(
+      declarationPattern,
+      (_match, prefix: string, current: string, suffix: string) => {
+        const next = declarationCount === update.afterValues.length
+          ? update.afterValues[Math.min(declarationIndex, update.afterValues.length - 1)]!
+          : canonicalTokenValue(update);
+        declarationIndex += 1;
+        if (current.trim() === next) return `${prefix}${current}${suffix}`;
+        replacements += 1;
+        return `${prefix}${next}${suffix}`;
+      },
+    );
+  }
+  return { content: rewritten, replacements };
+}
+
+function normalizeTokenOnlyText(content: string, updates: GovernedTokenUpdate[]): string {
+  let normalized = content;
+  const literals = [...new Set(updates.flatMap((update) => [...update.beforeValues, ...update.afterValues]))]
+    .sort((left, right) => right.length - left.length);
+  for (const literal of literals) normalized = normalized.replaceAll(literal, '<token-value>');
+  return normalized
+    .replace(/oklch\([^\n)]+\)|#[0-9a-fA-F]{3,8}|\b\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\b/g, '<color>')
+    .replace(/(?:(?:["']?(?:<color>|<token-value>)["']?)\s*,?\s*)+/g, '<colors>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isGovernedTokenOnlyTextChange(
+  before: string,
+  after: string,
+  updates: GovernedTokenUpdate[],
+): boolean {
+  const referencesGovernedToken = updates.some(({ name }) => {
+    const reference = new RegExp(`(?:--)?${escapeRegExp(name)}(?![a-zA-Z0-9_-])`, 'i');
+    return reference.test(before) || reference.test(after);
+  });
+  return updates.length > 0
+    && referencesGovernedToken
+    && normalizeTokenOnlyText(before, updates) === normalizeTokenOnlyText(after, updates);
+}
+
 interface WorkflowProject {
   id: string;
   name: string;
@@ -469,6 +564,7 @@ interface DesignWorkflowServiceDeps {
 interface CapturedWorkflowRun {
   projectId: string;
   root: string;
+  baseSha: string;
   before: DesignWorkflowFileSnapshot;
   dirtyBefore: Set<string>;
 }
@@ -599,6 +695,124 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     return revision;
   }
 
+  async function classifyCapturedChanges(
+    root: string,
+    baseSha: string,
+    paths: string[],
+    deletedPaths: ReadonlySet<string>,
+  ): Promise<DesignWorkflowRevisionClassification> {
+    const pathClassification = classifyDesignWorkflowChanges(paths, deletedPaths);
+    if (pathClassification === 'compatible' || deletedPaths.size > 0) return pathClassification;
+    const beforeCss = await readProjectGitFileAtRevision(root, baseSha, 'colors_and_type.css');
+    let afterCss: string;
+    try {
+      afterCss = fs.readFileSync(path.join(root, 'colors_and_type.css'), 'utf8');
+    } catch {
+      return 'structural';
+    }
+    const updates = governedTokenUpdates(beforeCss?.toString('utf8') ?? '', afterCss);
+    if (updates.length === 0) return 'structural';
+    for (const relativePath of paths) {
+      if (classifyDesignWorkflowChanges([relativePath]) === 'compatible') continue;
+      const before = await readProjectGitFileAtRevision(root, baseSha, relativePath);
+      if (before == null) return 'structural';
+      let after: Buffer;
+      try {
+        after = fs.readFileSync(path.join(root, relativePath));
+      } catch {
+        return 'structural';
+      }
+      if (
+        before.byteLength > HASH_MAX_BYTES
+        || after.byteLength > HASH_MAX_BYTES
+        || before.includes(0)
+        || after.includes(0)
+        || !isGovernedTokenOnlyTextChange(before.toString('utf8'), after.toString('utf8'), updates)
+      ) return 'structural';
+    }
+    return 'compatible';
+  }
+
+  function subscriberTextFiles(root: string): string[] {
+    const files: string[] = [];
+    const walk = (directory: string): void => {
+      if (files.length >= MAX_FILES) return;
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (files.length >= MAX_FILES) return;
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (!IGNORED_DIRS.has(entry.name)) walk(absolute);
+          continue;
+        }
+        if (!entry.isFile() || !PROPAGATION_TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+        const stat = fs.statSync(absolute);
+        if (stat.size <= HASH_MAX_BYTES) files.push(absolute);
+      }
+    };
+    walk(root);
+    return files;
+  }
+
+  async function applyCompatibleRevision(
+    project: WorkflowProject,
+    source: WorkflowProject,
+    revision: DesignWorkflowRevision,
+    previousSha: string | null,
+    snapshotPaths: string[],
+  ): Promise<void> {
+    const projectRoot = rootFor(project);
+    const sourceRoot = rootFor(source);
+    const beforeCss = previousSha
+      ? await readProjectGitFileAtRevision(sourceRoot, previousSha, 'colors_and_type.css')
+      : null;
+    const afterCss = await readProjectGitFileAtRevision(sourceRoot, revision.sha, 'colors_and_type.css');
+    const updates = governedTokenUpdates(beforeCss?.toString('utf8') ?? '', afterCss?.toString('utf8') ?? '');
+    const textWrites: Array<{ path: string; content: string }> = [];
+    let tokenReplacementCount = 0;
+    if (updates.length > 0) {
+      for (const filePath of subscriberTextFiles(projectRoot)) {
+        const current = fs.readFileSync(filePath, 'utf8');
+        const rewritten = rewriteGovernedTokens(current, updates);
+        if (rewritten.content === current) continue;
+        tokenReplacementCount += rewritten.replacements;
+        textWrites.push({ path: filePath, content: rewritten.content });
+      }
+    }
+
+    const binaryWrites: Array<{ path: string; content: Buffer }> = [];
+    for (const relativePath of snapshotPaths.filter((filePath) =>
+      filePath.startsWith('assets/') || filePath.startsWith('fonts/'),
+    )) {
+      const next = await readProjectGitFileAtRevision(sourceRoot, revision.sha, relativePath);
+      if (next == null) throw new Error(`Revision ${revision.shortSha} does not contain ${relativePath}.`);
+      const previous = previousSha
+        ? await readProjectGitFileAtRevision(sourceRoot, previousSha, relativePath)
+        : null;
+      const destination = path.resolve(projectRoot, relativePath);
+      if (!destination.startsWith(`${path.resolve(projectRoot)}${path.sep}`)) {
+        throw new Error(`Compatible revision path ${relativePath} cannot leave the subscriber project.`);
+      }
+      if (fs.existsSync(destination)) {
+        const current = fs.readFileSync(destination);
+        if (current.equals(next)) continue;
+        if (previous == null || !current.equals(previous)) {
+          throw new Error(`Automatic asset update stopped because ${relativePath} has local changes.`);
+        }
+      }
+      binaryWrites.push({ path: destination, content: next });
+    }
+
+    if (updates.length > 0 && tokenReplacementCount === 0) {
+      throw new Error('Automatic token update found no governed token definitions in the subscriber project.');
+    }
+    await materializeRevision(project, source, revision, snapshotPaths);
+    for (const write of textWrites) fs.writeFileSync(write.path, write.content);
+    for (const write of binaryWrites) {
+      fs.mkdirSync(path.dirname(write.path), { recursive: true });
+      fs.writeFileSync(write.path, write.content);
+    }
+  }
+
   async function materializeRevision(
     project: WorkflowProject,
     source: WorkflowProject,
@@ -668,7 +882,11 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     if (!previous || previous.designSystemId !== designSystemId) {
       const sourceFiles = compatibleFiles(snapshotDesignWorkflowFiles(rootFor(source)));
       try {
-        await materializeRevision(project, source, revision, sourceFiles);
+        if (revision.classification === 'compatible') {
+          await applyCompatibleRevision(project, source, revision, null, sourceFiles);
+        } else {
+          await materializeRevision(project, source, revision, sourceFiles);
+        }
       } catch (error) {
         failDesignWorkflowSubscription(db, projectId, error instanceof Error ? error.message : String(error));
       }
@@ -698,7 +916,17 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     if (!revision) throw new Error(`Revision ${sha} is not known for ${status.designSystemId}.`);
     const project = getProject(db, projectId)!;
     const source = getProject(db, status.sourceProjectId)!;
-    await materializeRevision(project, source, revision, compatibleFiles(snapshotDesignWorkflowFiles(rootFor(source))));
+    if (revision.classification === 'compatible') {
+      await applyCompatibleRevision(
+        project,
+        source,
+        revision,
+        status.subscription?.appliedSha ?? null,
+        compatibleFiles(snapshotDesignWorkflowFiles(rootFor(source))),
+      );
+    } else {
+      await materializeRevision(project, source, revision, compatibleFiles(snapshotDesignWorkflowFiles(rootFor(source))));
+    }
     rollbackDesignWorkflowSubscription(db, projectId, sha);
     return initializeProject(projectId);
   }
@@ -706,12 +934,18 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
   async function resume(projectId: string): Promise<DesignWorkflowStatusResponse> {
     const status = await initializeProject(projectId);
     if (status.role !== 'subscriber') throw new Error('Only asset projects can resume design-system updates.');
-    resumeDesignWorkflowSubscription(db, projectId, status.currentRevision);
     if (status.currentRevision.classification === 'compatible') {
       const project = getProject(db, projectId)!;
       const source = getProject(db, status.sourceProjectId)!;
-      await materializeRevision(project, source, status.currentRevision, status.currentRevision.changedPaths);
+      await applyCompatibleRevision(
+        project,
+        source,
+        status.currentRevision,
+        status.subscription?.appliedSha ?? null,
+        status.currentRevision.changedPaths,
+      );
     }
+    resumeDesignWorkflowSubscription(db, projectId, status.currentRevision);
     return initializeProject(projectId);
   }
 
@@ -747,11 +981,13 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     if (!foundProject || !isSourceProject(foundProject)) return;
     const project = await ensureSourceWorktree(foundProject);
     const root = rootFor(project);
-    const git = await readProjectGitStatus(root);
+    const git = await prepareProjectGitRevisionBase(root);
     if (!git.repository) return;
+    if (!git.lastCommit) throw new Error('The design-system worktree must have a committed base revision.');
     capturedRuns.set(runId, {
       projectId,
       root,
+      baseSha: git.lastCommit.hash,
       before: snapshotDesignWorkflowFiles(root),
       dirtyBefore: new Set(git.changes.flatMap((change) => [change.path, change.originalPath].filter((item): item is string => Boolean(item)))),
     });
@@ -841,7 +1077,12 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
       throw new Error(`Open Design did not auto-commit files that were already dirty before the run: ${collided.join(', ')}`);
     }
     const deletedPaths = new Set(changedPaths.filter((filePath) => !after.has(filePath)));
-    const classification = classifyDesignWorkflowChanges(changedPaths, deletedPaths);
+    const classification = await classifyCapturedChanges(
+      captured.root,
+      captured.baseSha,
+      changedPaths,
+      deletedPaths,
+    );
     const branch = `open-design/run-${input.runId.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 32)}`;
     const committed = await createAndPushProjectGitRevision(
       captured.root,
@@ -864,16 +1105,26 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
       listDesignWorkflowSubscriptions(db, revision.designSystemId)
         .map((subscription) => [subscription.projectId, subscription.appliedSha]),
     );
-    fanOutDesignWorkflowRevision(db, revision, subscribers);
     if (classification === 'compatible') {
       for (const subscriberId of subscribers) {
-        const subscription = getDesignWorkflowSubscription(db, subscriberId);
-        if (subscription?.status === 'pinned') continue;
+        const existing = getDesignWorkflowSubscription(db, subscriberId);
+        if (existing?.status === 'pinned') {
+          fanOutDesignWorkflowRevision(db, revision, [subscriberId]);
+          continue;
+        }
         const subscriber = getProject(db, subscriberId);
         if (!subscriber) continue;
         try {
-          await materializeRevision(subscriber, project, revision, changedPaths);
+          await applyCompatibleRevision(
+            subscriber,
+            project,
+            revision,
+            previousByProject.get(subscriberId) ?? null,
+            changedPaths,
+          );
+          fanOutDesignWorkflowRevision(db, revision, [subscriberId]);
         } catch (error) {
+          fanOutDesignWorkflowRevision(db, revision, [subscriberId]);
           failDesignWorkflowSubscription(
             db,
             subscriberId,
@@ -881,6 +1132,13 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
             previousByProject.get(subscriberId),
           );
         }
+      }
+    } else {
+      fanOutDesignWorkflowRevision(db, revision, subscribers);
+      for (const subscriberId of subscribers) {
+        const subscription = getDesignWorkflowSubscription(db, subscriberId);
+        if (subscription?.status === 'pinned') continue;
+        updateProject(db, subscriberId, { pendingPrompt: '/update' });
       }
     }
   }

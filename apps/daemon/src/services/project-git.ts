@@ -368,6 +368,58 @@ export async function createAndPushProjectGitRevision(
   return { commit: committed.commit, status: await readProjectGitStatus(projectRoot) };
 }
 
+export async function prepareProjectGitRevisionBase(
+  projectRoot: string,
+  baseBranchInput: unknown = 'main',
+): Promise<ProjectGitStatusResponse> {
+  const baseBranch = validateBranchName(baseBranchInput);
+  const before = await readProjectGitStatus(projectRoot);
+  if (!before.available) throw new ProjectGitError(before.error ?? 'Git is unavailable.', 'GIT_NOT_AVAILABLE');
+  if (!before.repository || !before.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  if (!before.clean) {
+    throw new ProjectGitError(
+      'The design-system worktree has uncommitted changes from an earlier run. Recover or commit them before starting another revision.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const remote = await runGit(before.repositoryRoot, ['remote', 'get-url', 'origin']);
+  if (!remote.ok || !remote.stdout.trim()) {
+    throw new ProjectGitError('The project needs an origin remote before Open Design can prepare revisions.', 'GIT_COMMAND_FAILED');
+  }
+  const remoteRef = `refs/remotes/origin/${baseBranch}`;
+  const fetched = await runGit(before.repositoryRoot, [
+    'fetch', '--prune', 'origin', `+refs/heads/${baseBranch}:${remoteRef}`,
+  ]);
+  if (!fetched.ok) {
+    throw new ProjectGitError(fetched.stderr.trim() || `Unable to fetch origin/${baseBranch}.`, 'GIT_COMMAND_FAILED');
+  }
+  const remoteIsAncestor = await runGit(before.repositoryRoot, ['merge-base', '--is-ancestor', remoteRef, 'HEAD']);
+  if (remoteIsAncestor.ok) return readProjectGitStatus(projectRoot);
+  const headIsAncestor = await runGit(before.repositoryRoot, ['merge-base', '--is-ancestor', 'HEAD', remoteRef]);
+  if (!headIsAncestor.ok) {
+    throw new ProjectGitError(
+      `The design-system worktree has diverged from origin/${baseBranch}. Reconcile it before starting another revision.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  if (!before.branch) {
+    throw new ProjectGitError(
+      `The design-system worktree is detached and behind origin/${baseBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const fastForwarded = await runGit(projectRoot, ['merge', '--ff-only', remoteRef]);
+  if (!fastForwarded.ok) {
+    throw new ProjectGitError(
+      fastForwarded.stderr.trim() || `Unable to fast-forward to origin/${baseBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  return readProjectGitStatus(projectRoot);
+}
+
 export async function readProjectGitFileAtRevision(
   projectRoot: string,
   shaInput: unknown,
