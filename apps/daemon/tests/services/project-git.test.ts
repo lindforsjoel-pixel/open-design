@@ -9,6 +9,7 @@ import {
   createAndPushProjectGitRevision,
   createProjectGitWorktree,
   parseProjectGitStatus,
+  prepareProjectGitRevisionBase,
   publishProjectGitRevision,
   readProjectGitStatus,
 } from '../../src/services/project-git.js';
@@ -140,6 +141,52 @@ describe('project Git service', () => {
     expect(status.branch).toBe('open-design/workspace-test');
     expect(runGit(repo, ['branch', '--show-current']).trim()).toBe(originalBranch);
     expect(runGit(target, ['rev-parse', 'HEAD']).trim()).toBe(runGit(repo, ['rev-parse', 'HEAD']).trim());
+  });
+
+  it('fast-forwards a clean revision base before a design run starts', async () => {
+    const remote = mkdtempSync(path.join(tmpdir(), 'od-project-freshness-remote-'));
+    tempDirs.push(remote);
+    runGit(remote, ['init', '--bare']);
+    const seed = makeRepo();
+    await writeFile(path.join(seed, 'DESIGN.md'), '# One\n');
+    runGit(seed, ['add', '-A']);
+    runGit(seed, ['commit', '-m', 'initial']);
+    runGit(seed, ['branch', '-M', 'main']);
+    runGit(seed, ['remote', 'add', 'origin', remote]);
+    runGit(seed, ['push', '-u', 'origin', 'main']);
+    runGit(remote, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+
+    const parent = mkdtempSync(path.join(tmpdir(), 'od-project-freshness-clone-'));
+    tempDirs.push(parent);
+    const checkout = path.join(parent, 'checkout');
+    runGit(parent, ['clone', remote, checkout]);
+    runGit(checkout, ['config', 'user.name', 'Open Design Test']);
+    runGit(checkout, ['config', 'user.email', 'open-design-test@example.invalid']);
+    await writeFile(path.join(seed, 'DESIGN.md'), '# Two\n');
+    runGit(seed, ['add', 'DESIGN.md']);
+    runGit(seed, ['commit', '-m', 'upstream update']);
+    runGit(seed, ['push', 'origin', 'main']);
+
+    const status = await prepareProjectGitRevisionBase(checkout);
+
+    expect(status.clean).toBe(true);
+    expect(runGit(checkout, ['rev-parse', 'HEAD']).trim()).toBe(runGit(seed, ['rev-parse', 'HEAD']).trim());
+  });
+
+  it('blocks a new design revision when an earlier run left uncommitted files', async () => {
+    const remote = mkdtempSync(path.join(tmpdir(), 'od-project-dirty-remote-'));
+    tempDirs.push(remote);
+    runGit(remote, ['init', '--bare']);
+    const repo = makeRepo();
+    await writeFile(path.join(repo, 'DESIGN.md'), '# One\n');
+    runGit(repo, ['add', '-A']);
+    runGit(repo, ['commit', '-m', 'initial']);
+    runGit(repo, ['branch', '-M', 'main']);
+    runGit(repo, ['remote', 'add', 'origin', remote]);
+    runGit(repo, ['push', '-u', 'origin', 'main']);
+    await writeFile(path.join(repo, 'DESIGN.md'), '# Dirty\n');
+
+    await expect(prepareProjectGitRevisionBase(repo)).rejects.toThrow(/uncommitted changes from an earlier run/i);
   });
 
   it('publishes an exact fast-forward revision without switching worktrees', async () => {

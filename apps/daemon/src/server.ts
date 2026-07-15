@@ -2731,6 +2731,7 @@ export async function startServer({
     listTabs,
     setTabs,
   };
+  let queueDesignWorkflowSubscriberUpdate: ((projectId: string) => void) | null = null;
   const designWorkflow = createDesignWorkflowService({
     db,
     projectsRoot: PROJECTS_DIR,
@@ -2739,6 +2740,7 @@ export async function startServer({
     listProjects,
     updateProject,
     resolveProjectDir,
+    queueSubscriberUpdate: (projectId) => queueDesignWorkflowSubscriberUpdate?.(projectId),
   });
   const conversationDeps = {
     insertConversation,
@@ -7975,6 +7977,155 @@ export async function startServer({
         child.stdin.end(composed, 'utf8', markStdinWriteEnd);
       }
     }
+  };
+
+  const automaticDesignWorkflowUpdates = new Map<string, Promise<void>>();
+
+  async function runAutomaticDesignWorkflowCommand(
+    projectId: string,
+    command: '/update' | '/push',
+  ): Promise<{ runId: string; succeeded: boolean }> {
+    const project = getProject(db, projectId);
+    if (!project) throw new Error(`Automatic design workflow project ${projectId} was not found.`);
+    const existingRuns = design.runs
+      .list({ projectId })
+      .filter((candidate) => !design.runs.isTerminal(candidate.status));
+    if (existingRuns.length > 0) {
+      await Promise.all(existingRuns.map((candidate) => design.runs.wait(candidate)));
+    }
+
+    const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+    let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId
+      ? appConfig.agentId
+      : null;
+    if (!agentId) {
+      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      agentId = agents.find((agent) => agent.available)?.id ?? null;
+    }
+    if (!agentId) {
+      throw new Error('No available agent is configured for automatic design workflow reconciliation.');
+    }
+
+    const now = Date.now();
+    const conversationId = `design-workflow-${randomUUID()}`;
+    const assistantMessageId = `design-workflow-assistant-${randomUUID()}`;
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: command === '/update' ? 'Automatic design reconciliation' : 'Automatic delivery preview',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+    const meta = {
+      agentId,
+      projectId,
+      conversationId,
+      assistantMessageId,
+      clientRequestId: `design-workflow-${command.slice(1)}-${randomUUID()}`,
+      designSystemId: project.designSystemId ?? null,
+      model: modelPrefs.model ?? null,
+      reasoning: modelPrefs.reasoning ?? null,
+      message: command,
+      currentPrompt: command,
+      systemPrompt: [
+        'This is an unattended design workflow run.',
+        command === '/update'
+          ? 'Reconcile the subscriber working files to the exact target design-system revision, preserve local additive extensions, and validate the result.'
+          : 'Prepare and validate the exact non-live delivery preview for the reconciled subscriber revision.',
+        'Do not ask follow-up questions, emit a discovery form, wait for user input, merge a delivery branch, deploy, restart live services, publish a page, or approve a delivery.',
+        'Only explicit approval of the resulting delivery may cross the go-live boundary.',
+      ].join('\n'),
+    };
+    const run = design.runs.create({
+      ...meta,
+      mediaExecution: defaultMediaExecutionPolicy(),
+    });
+    upsertMessage(db, conversationId, {
+      id: `design-workflow-user-${run.id}`,
+      role: 'user',
+      content: command,
+    });
+    upsertMessage(db, conversationId, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      agentId,
+      agentName: getAgentDef(agentId)?.name ?? agentId,
+      runId: run.id,
+      runStatus: 'queued',
+      startedAt: now,
+    });
+    pinAssistantMessageOnRunCreate(db, run);
+    reconcileAssistantMessageOnRunEnd(db, design.runs, run);
+    design.runs.start(run, () => startChatRun(meta, run));
+    const finalStatus = await design.runs.wait(run);
+    return {
+      runId: run.id,
+      succeeded: runResultFromStatus(finalStatus.status) === 'success',
+    };
+  }
+
+  queueDesignWorkflowSubscriberUpdate = (projectId) => {
+    const previous = automaticDesignWorkflowUpdates.get(projectId) ?? Promise.resolve();
+    const task = previous
+      .catch(() => {})
+      .then(async () => {
+        let status = await designWorkflow.statusForProject(projectId);
+        if (status.role !== 'subscriber' || !status.subscription) return;
+        if (status.subscription.status === 'pinned') return;
+
+        if (status.subscription.status === 'update_needed' || status.subscription.status === 'sync_failed') {
+          const expectedTargetSha = status.subscription.targetSha;
+          const updateRun = await runAutomaticDesignWorkflowCommand(projectId, '/update');
+          if (!updateRun.succeeded) {
+            throw new Error(`Automatic /update run ${updateRun.runId} failed for ${projectId}.`);
+          }
+          status = await designWorkflow.statusForProject(projectId);
+          if (status.role !== 'subscriber' || status.subscription?.targetSha !== expectedTargetSha) return;
+          await designWorkflow.completeRun({
+            runId: updateRun.runId,
+            projectId,
+            prompt: '/update',
+            succeeded: true,
+          });
+          status = await designWorkflow.statusForProject(projectId);
+        }
+
+        if (
+          status.role !== 'subscriber'
+          || !status.subscription
+          || status.subscription.status === 'pinned'
+          || status.subscription.appliedSha !== status.subscription.targetSha
+        ) return;
+        const expectedDeliverySha = status.subscription.appliedSha;
+        const pushRun = await runAutomaticDesignWorkflowCommand(projectId, '/push');
+        if (!pushRun.succeeded) {
+          throw new Error(`Automatic /push run ${pushRun.runId} failed for ${projectId}.`);
+        }
+        status = await designWorkflow.statusForProject(projectId);
+        if (
+          status.role !== 'subscriber'
+          || status.subscription?.appliedSha !== expectedDeliverySha
+          || status.subscription.targetSha !== expectedDeliverySha
+        ) return;
+        await designWorkflow.completeRun({
+          runId: pushRun.runId,
+          projectId,
+          prompt: '/push',
+          succeeded: true,
+        });
+      });
+    automaticDesignWorkflowUpdates.set(projectId, task);
+    void task
+      .catch((error) => {
+        console.warn(`[design-workflow] automatic subscriber update failed for ${projectId}`, error);
+      })
+      .finally(() => {
+        if (automaticDesignWorkflowUpdates.get(projectId) === task) {
+          automaticDesignWorkflowUpdates.delete(projectId);
+        }
+      });
   };
 
   orbitService.setRunHandler(async ({

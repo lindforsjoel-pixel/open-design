@@ -710,8 +710,17 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           }
         : {}),
     };
+    let designWorkflowCaptureError: Error | null = null;
+    if (run.projectId) {
+      try {
+        await designWorkflow.captureRunStart(run.id, run.projectId);
+      } catch (error) {
+        designWorkflowCaptureError = error instanceof Error ? error : new Error(String(error));
+        console.warn('[design-workflow] unable to capture run baseline', designWorkflowCaptureError);
+      }
+    }
     res.status(202).json(body);
-    if (resolvedSnapshot?.ok && resolvedSnapshot.snapshot.pipeline) {
+    if (!designWorkflowCaptureError && resolvedSnapshot?.ok && resolvedSnapshot.snapshot.pipeline) {
       firePipelineForRun({
         run,
         snapshot: resolvedSnapshot.snapshot,
@@ -729,12 +738,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[plugins] skill candidate hook setup failed', err);
       }
     }
-    if (run.projectId) {
-      await designWorkflow.captureRunStart(run.id, run.projectId).catch((error) => {
-        console.warn('[design-workflow] unable to capture run baseline', error);
-      });
-    }
-    design.runs.start(run, () => startChatRun(meta, run));
+    design.runs.start(run, designWorkflowCaptureError
+      ? async () => { throw designWorkflowCaptureError; }
+      : () => startChatRun(meta, run));
 
     const reqBody = requestBody;
     const analyticsHints =
