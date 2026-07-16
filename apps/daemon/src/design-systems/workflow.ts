@@ -1644,6 +1644,8 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
   }>();
   const capturedRunLocks = new Map<string, () => void>();
   const capturedRunProjects = new Map<string, string>();
+  const capturedProjectRuns = new Map<string, string>();
+  const capturedRunStatuses = new Map<string, DesignWorkflowStatusResponse>();
   const projectLockTails = new Map<string, Promise<void>>();
   db.prepare(`
     UPDATE design_workflow_delivery_challenges
@@ -1702,9 +1704,7 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
   ): Promise<T> {
     if (!runId) return withProjectLock(projectId, run);
     const capturedProjectId = capturedRunProjects.get(runId);
-    if (!capturedProjectId) {
-      throw new Error(`Run ${runId} does not hold a captured design-workflow lock.`);
-    }
+    if (!capturedProjectId) return withProjectLock(projectId, run);
     if (capturedProjectId !== projectId) {
       throw new Error(
         `Run ${runId} holds the design-workflow lock for ${capturedProjectId}, not ${projectId}.`,
@@ -2618,11 +2618,59 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     return withProjectLock(projectId, () => initializeProjectUnlocked(projectId));
   }
 
+  function projectStatusSnapshot(projectId: string): DesignWorkflowStatusResponse | null {
+    const project = getProject(db, projectId);
+    const designSystemId = project?.designSystemId;
+    if (!project || !designSystemId?.startsWith('user:')) return null;
+    const source = sourceFor(designSystemId);
+    if (!source) return null;
+    const revision = latestDesignWorkflowRevision(db, designSystemId);
+    if (!revision) return null;
+    if (project.id === source.id) {
+      return {
+        projectId,
+        role: 'source',
+        designSystemId,
+        sourceProjectId: source.id,
+        status: 'up_to_date',
+        currentRevision: revision,
+        subscription: null,
+        subscriberCount: listDesignWorkflowSubscriptions(db, designSystemId).length,
+        delivery: latestDesignWorkflowDelivery(db, projectId),
+      };
+    }
+    const subscription = getDesignWorkflowSubscription(db, projectId);
+    return {
+      projectId,
+      role: 'subscriber',
+      designSystemId,
+      sourceProjectId: source.id,
+      status: subscription?.status ?? 'update_needed',
+      currentRevision: revision,
+      subscription,
+      subscriberCount: listDesignWorkflowSubscriptions(db, designSystemId).length,
+      delivery: latestDesignWorkflowDelivery(db, projectId),
+    };
+  }
+
   async function statusForProject(
     projectId: string,
     runId?: string,
   ): Promise<DesignWorkflowStatusResponse> {
-    return withCapturedRunLock(projectId, runId, () => initializeProjectUnlocked(projectId));
+    if (!runId) {
+      const activeRunId = capturedProjectRuns.get(projectId);
+      const snapshot = activeRunId ? capturedRunStatuses.get(activeRunId) : null;
+      if (snapshot) return snapshot;
+    }
+    const status = await withCapturedRunLock(
+      projectId,
+      runId,
+      () => initializeProjectUnlocked(projectId),
+    );
+    if (runId && capturedRunProjects.get(runId) === projectId) {
+      capturedRunStatuses.set(runId, status);
+    }
+    return status;
   }
 
   async function rollback(projectId: string, sha: string): Promise<DesignWorkflowStatusResponse> {
@@ -2760,6 +2808,7 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
       if (command !== '/approve' && approvalState.active) {
         throw new Error('A delivery approval is in progress; project mutations are unavailable until it finishes.');
       }
+      const capturedStatus = projectStatusSnapshot(projectId);
       if (command === '/approve') {
         const approval = parseDesignWorkflowApprovalPrompt(prompt);
         if (!approval) throw new Error('Use /approve <delivery-id> <implementation-digest>.');
@@ -2786,6 +2835,8 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
         if (!git.repository) {
           capturedRunLocks.set(runId, release);
           capturedRunProjects.set(runId, projectId);
+          capturedProjectRuns.set(projectId, runId);
+          if (capturedStatus) capturedRunStatuses.set(runId, capturedStatus);
           keepLock = true;
           return;
         }
@@ -2811,6 +2862,8 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
       }
       capturedRunLocks.set(runId, release);
       capturedRunProjects.set(runId, projectId);
+      capturedProjectRuns.set(projectId, runId);
+      if (capturedStatus) capturedRunStatuses.set(runId, capturedStatus);
       keepLock = true;
     } finally {
       if (!keepLock) {
@@ -3250,6 +3303,10 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
       }
       capturedRuns.delete(input.runId);
       capturedRunProjects.delete(input.runId);
+      if (capturedProjectRuns.get(input.projectId) === input.runId) {
+        capturedProjectRuns.delete(input.projectId);
+      }
+      capturedRunStatuses.delete(input.runId);
       ACTIVE_DESIGN_WORKFLOW_APPROVAL_RUNS.delete(input.runId);
       release();
     }

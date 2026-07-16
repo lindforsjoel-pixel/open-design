@@ -1426,6 +1426,9 @@ describe('design workflow automatic propagation', () => {
       service.promptContext('source', 'Hold source lock.', 'run-lock-source'),
     ).resolves.toContain('Design workflow source revision');
     await expect(
+      service.statusForProject('source'),
+    ).resolves.toEqual(expect.objectContaining({ role: 'source' }));
+    await expect(
       service.statusForProject('asset', 'run-lock-source'),
     ).rejects.toThrow('holds the design-workflow lock for source, not asset');
 
@@ -1443,6 +1446,9 @@ describe('design workflow automatic propagation', () => {
       succeeded: false,
     });
     await expect(publication).resolves.toEqual(expect.objectContaining({ role: 'source' }));
+    await expect(
+      service.statusForProject('source', 'routine-run-without-capture'),
+    ).resolves.toEqual(expect.objectContaining({ role: 'source' }));
   });
 
   it('binds Core UI delivery to the exact remote preview tip and remote default branch', async () => {
