@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type {
   ProjectGitChange,
@@ -17,6 +18,32 @@ interface GitCommandResult {
   stdout: string;
   stderr: string;
   missing: boolean;
+}
+
+export interface ProjectGitCanonicalRemoteHead {
+  branch: string;
+  sha: string;
+}
+
+export interface ProjectGitCanonicalDeploymentInput {
+  expectedRemoteUrl: string;
+  baseBranch: string;
+  baseCommit: string;
+  targetCommit: string;
+  scopePath: string;
+}
+
+export interface QuarantineProjectGitRunStateInput {
+  projectId: string;
+  runId: string;
+  baseSha: string;
+  baseBranch: string;
+}
+
+export interface QuarantineProjectGitRunStateResult {
+  recoveryBranch: string | null;
+  recoverySha: string | null;
+  status: ProjectGitStatusResponse;
 }
 
 export class ProjectGitError extends Error {
@@ -55,6 +82,89 @@ function runGit(cwd: string, args: string[]): Promise<GitCommandResult> {
       },
     );
   });
+}
+
+async function runGitWithIsolatedConfig(
+  args: string[],
+  canonicalRemoteUrl: string,
+  sourceRepositoryRoot?: string,
+): Promise<GitCommandResult> {
+  const isolatedRoot = await mkdtemp(path.join(tmpdir(), 'open-design-git-remote-'));
+  const emptyConfigPath = path.join(isolatedRoot, 'empty.gitconfig');
+  await writeFile(emptyConfigPath, '', { mode: 0o600 });
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    const normalizedKey = key.toUpperCase();
+    if (normalizedKey.startsWith('GIT_')) continue;
+    env[key] = value;
+  }
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_SYSTEM = emptyConfigPath;
+  env.GIT_CONFIG_GLOBAL = emptyConfigPath;
+  env.GIT_CONFIG_COUNT = '0';
+  env.GIT_TERMINAL_PROMPT = '0';
+  if (canonicalRemoteUsesSsh(canonicalRemoteUrl)) {
+    env.GIT_SSH_COMMAND = [
+      'ssh',
+      '-F /dev/null',
+      '-o BatchMode=yes',
+      '-o StrictHostKeyChecking=yes',
+      '-o ProxyCommand=none',
+      '-o ProxyJump=none',
+      '-o ControlMaster=no',
+      '-o ControlPath=none',
+      '-o ControlPersist=no',
+      '-o ForwardAgent=no',
+      '-o ClearAllForwardings=yes',
+    ].join(' ');
+    env.GIT_SSH_VARIANT = 'ssh';
+  }
+  env.LC_ALL = 'C';
+
+  try {
+    const execute = (
+      cwd: string,
+      commandArgs: string[],
+    ): Promise<GitCommandResult> => new Promise((resolve) => {
+      execFile(
+        'git',
+        commandArgs,
+        {
+          cwd,
+          encoding: 'utf8',
+          maxBuffer: MAX_BUFFER_BYTES,
+          env,
+        },
+        (error, stdout, stderr) => {
+          const execError = error as NodeJS.ErrnoException | null;
+          resolve({
+            ok: error == null,
+            stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+            stderr: typeof stderr === 'string' ? stderr : String(stderr ?? ''),
+            missing: execError?.code === 'ENOENT',
+          });
+        },
+      );
+    });
+    let commandRoot = isolatedRoot;
+    if (sourceRepositoryRoot) {
+      const pushRepository = path.join(isolatedRoot, 'push.git');
+      const cloned = await execute(isolatedRoot, [
+        'clone',
+        '--bare',
+        '--shared',
+        '--no-tags',
+        '--',
+        sourceRepositoryRoot,
+        pushRepository,
+      ]);
+      if (!cloned.ok) return cloned;
+      commandRoot = pushRepository;
+    }
+    return await execute(commandRoot, args);
+  } finally {
+    await rm(isolatedRoot, { recursive: true, force: true });
+  }
 }
 
 function runGitBuffer(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: Buffer; stderr: string }> {
@@ -339,6 +449,345 @@ function validateBranchName(branchInput: unknown): string {
   return branch;
 }
 
+function validateRevisionSha(shaInput: unknown): string {
+  const sha = typeof shaInput === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(shaInput)
+    ? shaInput
+    : '';
+  if (!sha) throw new ProjectGitError('Revision SHA is invalid.', 'INVALID_GIT_REQUEST');
+  return sha;
+}
+
+function validateRevisionRef(refInput: unknown): string {
+  const ref = typeof refInput === 'string' ? refInput : '';
+  if (
+    !ref
+    || ref.length > 1024
+    || ref.startsWith('-')
+    || !/^[a-zA-Z0-9_./-]+$/.test(ref)
+    || ref.includes('..')
+    || ref.includes('//')
+    || ref.endsWith('/')
+    || ref.endsWith('.')
+  ) {
+    throw new ProjectGitError('Revision verification request is invalid.', 'INVALID_GIT_REQUEST');
+  }
+  return ref;
+}
+
+function canonicalRemoteUsesSsh(remoteUrl: string): boolean {
+  return /^ssh:\/\//i.test(remoteUrl) || /^[^/@:\s]+@[^/:\s]+:.+$/.test(remoteUrl);
+}
+
+function validateCanonicalRemoteUrl(urlInput: unknown): string {
+  const url = typeof urlInput === 'string' ? urlInput : '';
+  if (
+    !url
+    || url.length > 4096
+    || url !== url.trim()
+    || url.startsWith('-')
+    || /[\0\r\n]/.test(url)
+  ) {
+    throw new ProjectGitError('Canonical remote URL is invalid.', 'INVALID_GIT_REQUEST');
+  }
+  return url;
+}
+
+function validateRecoveryIdentifier(valueInput: unknown, label: string): string {
+  const value = typeof valueInput === 'string' ? valueInput.trim() : '';
+  if (!value || value.length > 64 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)) {
+    throw new ProjectGitError(`${label} is invalid.`, 'INVALID_GIT_REQUEST');
+  }
+  return value;
+}
+
+function recoveryCommitMessage(
+  projectId: string,
+  runId: string,
+  baseBranch: string,
+  baseSha: string,
+): string {
+  return [
+    `Preserve failed Open Design run ${runId}`,
+    '',
+    `Open-Design-Recovery-Project: ${projectId}`,
+    `Open-Design-Recovery-Run: ${runId}`,
+    `Open-Design-Recovery-Base-Branch: ${baseBranch}`,
+    `Open-Design-Recovery-Base-SHA: ${baseSha}`,
+  ].join('\n');
+}
+
+async function recoveryCommitMatchesRun(
+  repositoryRoot: string,
+  recoverySha: string,
+  projectId: string,
+  runId: string,
+  baseBranch: string,
+  baseSha: string,
+): Promise<boolean> {
+  const result = await runGit(repositoryRoot, ['show', '-s', '--format=%B', recoverySha]);
+  if (!result.ok) return false;
+  const requiredTrailers = recoveryCommitMessage(projectId, runId, baseBranch, baseSha)
+    .split('\n')
+    .slice(2);
+  const messageLines = new Set(result.stdout.trimEnd().split('\n'));
+  return requiredTrailers.every((line) => messageLines.has(line));
+}
+
+export async function quarantineProjectGitRunState(
+  projectRoot: string,
+  input: QuarantineProjectGitRunStateInput,
+): Promise<QuarantineProjectGitRunStateResult> {
+  const projectId = validateRecoveryIdentifier(input?.projectId, 'Project ID');
+  const runId = validateRecoveryIdentifier(input?.runId, 'Run ID');
+  const baseBranch = validateBranchName(input?.baseBranch);
+  const requestedBaseSha = validateRevisionSha(input?.baseSha);
+  const recoveryBranch = `open-design/recovery-${projectId}-${runId}`;
+  const recoveryRef = `refs/heads/${recoveryBranch}`;
+  if (recoveryBranch === baseBranch) {
+    throw new ProjectGitError('The recovery branch must differ from the captured branch.', 'INVALID_GIT_REQUEST');
+  }
+
+  const before = await readProjectGitStatus(projectRoot);
+  if (!before.available) throw new ProjectGitError(before.error ?? 'Git is unavailable.', 'GIT_NOT_AVAILABLE');
+  if (!before.repository || !before.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  const [canonicalProjectRoot, canonicalRepositoryRoot] = await Promise.all([
+    realpath(projectRoot),
+    realpath(before.repositoryRoot),
+  ]);
+  if (canonicalProjectRoot !== canonicalRepositoryRoot) {
+    throw new ProjectGitError(
+      'Failed-run recovery is only available for a managed worktree rooted at the Git repository.',
+      'INVALID_GIT_REQUEST',
+    );
+  }
+  const validBaseBranch = await runGit(canonicalRepositoryRoot, ['check-ref-format', '--branch', baseBranch]);
+  if (!validBaseBranch.ok) {
+    throw new ProjectGitError('Captured branch name is invalid.', 'INVALID_GIT_REQUEST');
+  }
+  const resolvedBase = await runGit(canonicalRepositoryRoot, [
+    'rev-parse',
+    '--verify',
+    `${requestedBaseSha}^{commit}`,
+  ]);
+  const baseSha = resolvedBase.stdout.trim();
+  if (!resolvedBase.ok || baseSha.toLowerCase() !== requestedBaseSha.toLowerCase()) {
+    throw new ProjectGitError('Captured revision is not an available commit.', 'INVALID_GIT_REQUEST');
+  }
+
+  const existingRecovery = await runGit(canonicalRepositoryRoot, [
+    'rev-parse',
+    '--verify',
+    `${recoveryRef}^{commit}`,
+  ]);
+  let recoverySha = existingRecovery.ok ? existingRecovery.stdout.trim() : '';
+  if (
+    recoverySha
+    && !await recoveryCommitMatchesRun(
+      canonicalRepositoryRoot,
+      recoverySha,
+      projectId,
+      runId,
+      baseBranch,
+      baseSha,
+    )
+  ) {
+    throw new ProjectGitError(
+      `Recovery branch ${recoveryBranch} already exists for different run state.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+
+  const currentHeadResult = await runGit(canonicalRepositoryRoot, ['rev-parse', '--verify', 'HEAD^{commit}']);
+  if (!currentHeadResult.ok) {
+    throw new ProjectGitError('The managed worktree does not have a current commit.', 'GIT_COMMAND_FAILED');
+  }
+  const currentHead = currentHeadResult.stdout.trim();
+  if (before.branch === baseBranch && before.clean && currentHead === baseSha) {
+    return {
+      recoveryBranch: recoverySha ? recoveryBranch : null,
+      recoverySha: recoverySha || null,
+      status: before,
+    };
+  }
+
+  const untracked = await runGit(canonicalRepositoryRoot, [
+    'ls-files',
+    '--others',
+    '--exclude-standard',
+    '-z',
+    '--',
+    '.',
+  ]);
+  if (!untracked.ok) {
+    throw new ProjectGitError(
+      untracked.stderr.trim() || 'Unable to inspect untracked failed-run state.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const embeddedRepositories = untracked.stdout
+    .split('\0')
+    .filter((entry) => entry.endsWith('/'));
+  if (embeddedRepositories.length > 0) {
+    throw new ProjectGitError(
+      `Failed-run recovery cannot safely capture untracked embedded Git repositories: ${
+        embeddedRepositories.join(', ')
+      }`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+
+  const staged = await runGit(canonicalRepositoryRoot, [
+    '--literal-pathspecs',
+    'add',
+    '--all',
+    '--',
+    '.',
+  ]);
+  if (!staged.ok) {
+    throw new ProjectGitError(
+      staged.stderr.trim() || 'Unable to stage failed-run state for recovery.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const snapshotTreeResult = await runGit(canonicalRepositoryRoot, ['write-tree']);
+  if (!snapshotTreeResult.ok) {
+    throw new ProjectGitError(
+      snapshotTreeResult.stderr.trim() || 'Unable to snapshot failed-run state.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const snapshotTree = snapshotTreeResult.stdout.trim();
+
+  let reuseExistingRecovery = false;
+  if (recoverySha) {
+    const [existingTree, containsCurrentHead] = await Promise.all([
+      runGit(canonicalRepositoryRoot, ['rev-parse', '--verify', `${recoverySha}^{tree}`]),
+      runGit(canonicalRepositoryRoot, ['merge-base', '--is-ancestor', currentHead, recoverySha]),
+    ]);
+    reuseExistingRecovery = existingTree.ok
+      && existingTree.stdout.trim() === snapshotTree
+      && containsCurrentHead.ok;
+  }
+
+  if (!reuseExistingRecovery) {
+    const parents = recoverySha ? [recoverySha] : [];
+    if (!recoverySha) {
+      parents.push(currentHead);
+    } else {
+      const currentAlreadyPreserved = await runGit(
+        canonicalRepositoryRoot,
+        ['merge-base', '--is-ancestor', currentHead, recoverySha],
+      );
+      if (!currentAlreadyPreserved.ok && currentHead !== recoverySha) parents.push(currentHead);
+    }
+    const commitArgs = [
+      '-c',
+      'user.name=Open Design Recovery',
+      '-c',
+      'user.email=open-design-recovery@example.invalid',
+      '-c',
+      'commit.gpgSign=false',
+      'commit-tree',
+      snapshotTree,
+    ];
+    for (const parentSha of parents) commitArgs.push('-p', parentSha);
+    commitArgs.push('-m', recoveryCommitMessage(projectId, runId, baseBranch, baseSha));
+    const recoveryCommit = await runGit(canonicalRepositoryRoot, commitArgs);
+    if (!recoveryCommit.ok) {
+      throw new ProjectGitError(
+        recoveryCommit.stderr.trim() || 'Unable to commit failed-run recovery state.',
+        'GIT_COMMAND_FAILED',
+      );
+    }
+    const nextRecoverySha = recoveryCommit.stdout.trim();
+    validateRevisionSha(nextRecoverySha);
+    const expectedOldSha = recoverySha || '0'.repeat(nextRecoverySha.length);
+    const updated = await runGit(canonicalRepositoryRoot, [
+      'update-ref',
+      recoveryRef,
+      nextRecoverySha,
+      expectedOldSha,
+    ]);
+    if (!updated.ok) {
+      throw new ProjectGitError(
+        updated.stderr.trim() || `Unable to update recovery branch ${recoveryBranch}.`,
+        'GIT_COMMAND_FAILED',
+      );
+    }
+    recoverySha = nextRecoverySha;
+  }
+
+  const resetCurrent = await runGit(canonicalRepositoryRoot, ['reset', '--hard', 'HEAD']);
+  if (!resetCurrent.ok) {
+    throw new ProjectGitError(
+      `${resetCurrent.stderr.trim() || 'Unable to clean the managed worktree.'} Recovery is preserved on ${recoveryBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const cleanedCurrent = await runGit(canonicalRepositoryRoot, ['clean', '-fd']);
+  if (!cleanedCurrent.ok) {
+    throw new ProjectGitError(
+      `${cleanedCurrent.stderr.trim() || 'Unable to remove recovered untracked files.'} Recovery is preserved on ${recoveryBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  for (const operation of [
+    ['rebase', '--quit'],
+    ['merge', '--quit'],
+    ['cherry-pick', '--quit'],
+    ['revert', '--quit'],
+    ['am', '--quit'],
+  ]) {
+    await runGit(canonicalRepositoryRoot, operation);
+  }
+  const restoredBranch = await runGit(canonicalRepositoryRoot, [
+    'switch',
+    '--discard-changes',
+    '--force-create',
+    baseBranch,
+    baseSha,
+  ]);
+  if (!restoredBranch.ok) {
+    throw new ProjectGitError(
+      `${restoredBranch.stderr.trim() || `Unable to restore ${baseBranch}.`} Recovery is preserved on ${recoveryBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const restoredHead = await runGit(canonicalRepositoryRoot, ['reset', '--hard', baseSha]);
+  const cleanedRestored = await runGit(canonicalRepositoryRoot, ['clean', '-fd']);
+  if (!restoredHead.ok || !cleanedRestored.ok) {
+    throw new ProjectGitError(
+      `${
+        restoredHead.stderr.trim()
+        || cleanedRestored.stderr.trim()
+        || `Unable to restore ${baseBranch} at ${baseSha}.`
+      } Recovery is preserved on ${recoveryBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+
+  const status = await readProjectGitStatus(projectRoot);
+  const finalHead = await runGit(canonicalRepositoryRoot, ['rev-parse', '--verify', 'HEAD^{commit}']);
+  if (
+    !status.clean
+    || status.branch !== baseBranch
+    || !finalHead.ok
+    || finalHead.stdout.trim() !== baseSha
+  ) {
+    throw new ProjectGitError(
+      `Managed worktree restoration did not reach ${baseBranch} at ${baseSha}. Recovery is preserved on ${recoveryBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  return {
+    recoveryBranch,
+    recoverySha,
+    status,
+  };
+}
+
 export async function createAndPushProjectGitRevision(
   projectRoot: string,
   branchInput: unknown,
@@ -425,9 +874,8 @@ export async function readProjectGitFileAtRevision(
   shaInput: unknown,
   filePathInput: unknown,
 ): Promise<Buffer | null> {
-  const sha = typeof shaInput === 'string' && /^[a-f0-9]{7,64}$/i.test(shaInput) ? shaInput : '';
+  const sha = validateRevisionSha(shaInput);
   const [filePath] = validateCommitPaths([filePathInput]);
-  if (!sha) throw new ProjectGitError('Revision SHA is invalid.', 'INVALID_GIT_REQUEST');
   const canonicalProjectRoot = await realpath(projectRoot);
   const rootResult = await runGit(canonicalProjectRoot, ['rev-parse', '--show-toplevel']);
   if (!rootResult.ok) throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
@@ -436,6 +884,44 @@ export async function readProjectGitFileAtRevision(
   const repositoryPath = projectPrefix ? `${projectPrefix}/${filePath}` : filePath;
   const result = await runGitBuffer(canonicalProjectRoot, ['show', `${sha}:${repositoryPath}`]);
   return result.ok ? result.stdout : null;
+}
+
+export async function listProjectGitFilesAtRevision(
+  projectRoot: string,
+  shaInput: unknown,
+): Promise<string[]> {
+  const sha = validateRevisionSha(shaInput);
+  const canonicalProjectRoot = await realpath(projectRoot);
+  const rootResult = await runGit(canonicalProjectRoot, ['rev-parse', '--show-toplevel']);
+  if (!rootResult.ok) throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  const repositoryRoot = path.resolve(rootResult.stdout.trim());
+  const projectPrefix = path.relative(repositoryRoot, canonicalProjectRoot).replace(/\\/g, '/');
+  if (projectPrefix === '..' || projectPrefix.startsWith('../') || path.isAbsolute(projectPrefix)) {
+    throw new ProjectGitError('Project directory is outside the detected Git repository.', 'GIT_COMMAND_FAILED');
+  }
+  const result = await runGitBuffer(repositoryRoot, [
+    '--literal-pathspecs',
+    'ls-tree',
+    '-r',
+    '--name-only',
+    '-z',
+    sha,
+    '--',
+    projectPrefix || '.',
+  ]);
+  if (!result.ok) {
+    throw new ProjectGitError(
+      result.stderr.trim() || `Unable to read revision ${sha.slice(0, 8)}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  return result.stdout
+    .toString('utf8')
+    .split('\0')
+    .filter(Boolean)
+    .map((repositoryPath) => projectRelativePath(repositoryPath, projectPrefix))
+    .filter((filePath): filePath is string => filePath != null)
+    .sort();
 }
 
 export async function createProjectGitWorktree(
@@ -473,9 +959,8 @@ export async function publishProjectGitRevision(
   shaInput: unknown,
   baseBranchInput: unknown = 'main',
 ): Promise<ProjectGitStatusResponse> {
-  const sha = typeof shaInput === 'string' && /^[a-f0-9]{7,64}$/i.test(shaInput) ? shaInput : '';
+  const sha = validateRevisionSha(shaInput);
   const baseBranch = validateBranchName(baseBranchInput);
-  if (!sha) throw new ProjectGitError('Revision SHA is invalid.', 'INVALID_GIT_REQUEST');
   const status = await readProjectGitStatus(projectRoot);
   if (!status.repository || !status.repositoryRoot) {
     throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
@@ -511,20 +996,521 @@ export async function projectGitRevisionIsAncestor(
   refInput: unknown,
   options: { fetchOriginBranch?: string } = {},
 ): Promise<boolean> {
-  const sha = typeof shaInput === 'string' && /^[a-f0-9]{7,64}$/i.test(shaInput) ? shaInput : '';
-  const ref = typeof refInput === 'string' && /^[a-zA-Z0-9_./-]+$/.test(refInput) ? refInput : '';
-  if (!sha || !ref) throw new ProjectGitError('Revision verification request is invalid.', 'INVALID_GIT_REQUEST');
+  const sha = validateRevisionSha(shaInput);
+  const ref = validateRevisionRef(refInput);
   const status = await readProjectGitStatus(projectRoot);
   if (!status.repository || !status.repositoryRoot) {
     throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
   }
   if (options.fetchOriginBranch) {
     const branch = validateBranchName(options.fetchOriginBranch);
-    const fetched = await runGit(status.repositoryRoot, ['fetch', 'origin', branch]);
+    const fetched = await runGit(status.repositoryRoot, [
+      'fetch',
+      '--prune',
+      'origin',
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
     if (!fetched.ok) {
       throw new ProjectGitError(fetched.stderr.trim() || `Unable to fetch origin/${branch}.`, 'GIT_COMMAND_FAILED');
     }
   }
   const result = await runGit(status.repositoryRoot, ['merge-base', '--is-ancestor', sha, ref]);
   return result.ok;
+}
+
+async function assertCanonicalRemoteProjectPath(projectRoot: string): Promise<void> {
+  try {
+    await realpath(projectRoot);
+  } catch {
+    throw new ProjectGitError('Project path is unavailable.', 'NOT_GIT_REPOSITORY');
+  }
+}
+
+export async function readProjectGitCanonicalRemoteHead(
+  projectRoot: string,
+  expectedRemoteUrlInput: unknown,
+): Promise<ProjectGitCanonicalRemoteHead> {
+  await assertCanonicalRemoteProjectPath(projectRoot);
+  const expectedRemoteUrl = validateCanonicalRemoteUrl(expectedRemoteUrlInput);
+  const result = await runGitWithIsolatedConfig([
+    'ls-remote',
+    '--symref',
+    '--exit-code',
+    '--',
+    expectedRemoteUrl,
+    'HEAD',
+  ], expectedRemoteUrl);
+  if (result.missing) {
+    throw new ProjectGitError('Git is not installed or is not available on PATH.', 'GIT_NOT_AVAILABLE');
+  }
+  if (!result.ok) {
+    throw new ProjectGitError(
+      result.stderr.trim() || 'Unable to discover the canonical remote default branch.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const lines = result.stdout.split(/\r?\n/).filter(Boolean);
+  const symrefs = lines
+    .map((line) => /^ref:\s+refs\/heads\/([^\t]+)\tHEAD$/.exec(line)?.[1] ?? null)
+    .filter((branch): branch is string => branch != null);
+  const headShas = lines
+    .map((line) => /^([a-f0-9]+)\tHEAD$/i.exec(line)?.[1] ?? null)
+    .filter((sha): sha is string => sha != null);
+  if (symrefs.length !== 1 || headShas.length !== 1) {
+    throw new ProjectGitError(
+      'Canonical remote did not advertise one exact default branch and HEAD revision.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  return {
+    branch: validateBranchName(symrefs[0]),
+    sha: validateRevisionSha(headShas[0]),
+  };
+}
+
+export async function readProjectGitCanonicalRemoteBranchRevision(
+  projectRoot: string,
+  expectedRemoteUrlInput: unknown,
+  branchInput: unknown,
+): Promise<string> {
+  await assertCanonicalRemoteProjectPath(projectRoot);
+  const expectedRemoteUrl = validateCanonicalRemoteUrl(expectedRemoteUrlInput);
+  const branch = validateBranchName(branchInput);
+  const expectedRef = `refs/heads/${branch}`;
+  const result = await runGitWithIsolatedConfig([
+    'ls-remote',
+    '--refs',
+    '--exit-code',
+    '--',
+    expectedRemoteUrl,
+    expectedRef,
+  ], expectedRemoteUrl);
+  if (result.missing) {
+    throw new ProjectGitError('Git is not installed or is not available on PATH.', 'GIT_NOT_AVAILABLE');
+  }
+  if (!result.ok) {
+    throw new ProjectGitError(
+      result.stderr.trim() || `Unable to read canonical remote branch ${branch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const matches = result.stdout
+    .split(/\r?\n/)
+    .map((line) => /^([a-f0-9]+)\t(.+)$/i.exec(line))
+    .filter((match) => match?.[2] === expectedRef);
+  if (matches.length !== 1 || !matches[0]?.[1]) {
+    throw new ProjectGitError(
+      `Canonical remote did not advertise one exact ${expectedRef} revision.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  return validateRevisionSha(matches[0][1]);
+}
+
+export async function deployProjectGitCanonicalRevision(
+  projectRoot: string,
+  input: ProjectGitCanonicalDeploymentInput,
+): Promise<ProjectGitStatusResponse> {
+  const expectedRemoteUrl = validateCanonicalRemoteUrl(input?.expectedRemoteUrl);
+  const baseBranch = validateBranchName(input?.baseBranch);
+  const baseCommit = validateRevisionSha(input?.baseCommit).toLowerCase();
+  const targetCommit = validateRevisionSha(input?.targetCommit).toLowerCase();
+  const [scopePath] = validateCommitPaths([input?.scopePath]);
+  if (!scopePath) {
+    throw new ProjectGitError('Canonical deployment scope is invalid.', 'INVALID_GIT_REQUEST');
+  }
+  if (baseCommit === targetCommit) {
+    throw new ProjectGitError(
+      'Canonical deployment base and target commits must differ.',
+      'INVALID_GIT_REQUEST',
+    );
+  }
+  const status = await readProjectGitStatus(path.join(projectRoot, scopePath));
+  if (!status.repository || !status.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  const [canonicalProjectRoot, canonicalRepositoryRoot] = await Promise.all([
+    realpath(projectRoot),
+    realpath(status.repositoryRoot),
+  ]);
+  if (canonicalProjectRoot !== canonicalRepositoryRoot) {
+    throw new ProjectGitError(
+      'Canonical deployment requires the primary repository root.',
+      'INVALID_GIT_REQUEST',
+    );
+  }
+  if (
+    status.branch !== baseBranch
+    || status.truncated
+    || !status.clean
+    || !status.lastCommit
+  ) {
+    throw new ProjectGitError(
+      `Canonical deployment requires clean scope ${scopePath} on branch ${baseBranch}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const localCommit = status.lastCommit.hash.toLowerCase();
+  if (localCommit !== baseCommit && localCommit !== targetCommit) {
+    throw new ProjectGitError(
+      'Canonical deployment live checkout is neither the frozen base nor the approved target.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const [targetExists, targetIsFastForward] = await Promise.all([
+    runGit(canonicalRepositoryRoot, ['cat-file', '-e', `${targetCommit}^{commit}`]),
+    runGit(canonicalRepositoryRoot, [
+      'merge-base',
+      '--is-ancestor',
+      baseCommit,
+      targetCommit,
+    ]),
+  ]);
+  if (!targetExists.ok || !targetIsFastForward.ok) {
+    throw new ProjectGitError(
+      'Canonical deployment target is unavailable or is not a fast-forward of the frozen base.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+
+  const remoteHead = await readProjectGitCanonicalRemoteHead(
+    canonicalRepositoryRoot,
+    expectedRemoteUrl,
+  );
+  if (remoteHead.branch !== baseBranch) {
+    throw new ProjectGitError(
+      'Canonical remote default branch changed after the delivery challenge was issued.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const remoteCommit = remoteHead.sha.toLowerCase();
+  if (remoteCommit !== baseCommit && remoteCommit !== targetCommit) {
+    throw new ProjectGitError(
+      'Canonical remote changed outside the frozen base-to-target deployment transition.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  if (remoteCommit === baseCommit) {
+    const pushed = await runGitWithIsolatedConfig([
+      'push',
+      '--porcelain',
+      '--no-verify',
+      `--force-with-lease=refs/heads/${baseBranch}:${baseCommit}`,
+      expectedRemoteUrl,
+      `${targetCommit}:refs/heads/${baseBranch}`,
+    ], expectedRemoteUrl, canonicalRepositoryRoot);
+    if (!pushed.ok) {
+      throw new ProjectGitError(
+        pushed.stderr.trim()
+          || 'Canonical remote changed before the approved target could be published.',
+        'GIT_COMMAND_FAILED',
+      );
+    }
+  }
+  if (localCommit === baseCommit) {
+    const fastForwarded = await runGit(canonicalRepositoryRoot, [
+      '-c',
+      'core.hooksPath=/dev/null',
+      'merge',
+      '--ff-only',
+      '--no-verify',
+      targetCommit,
+    ]);
+    if (!fastForwarded.ok) {
+      throw new ProjectGitError(
+        fastForwarded.stderr.trim()
+          || 'Live checkout could not fast-forward to the approved target.',
+        'GIT_COMMAND_FAILED',
+      );
+    }
+  }
+
+  const [finalRemoteHead, finalStatus] = await Promise.all([
+    readProjectGitCanonicalRemoteHead(
+      canonicalRepositoryRoot,
+      expectedRemoteUrl,
+    ),
+    readProjectGitStatus(path.join(canonicalRepositoryRoot, scopePath)),
+  ]);
+  if (
+    finalRemoteHead.branch !== baseBranch
+    || finalRemoteHead.sha.toLowerCase() !== targetCommit
+    || finalStatus.branch !== baseBranch
+    || finalStatus.truncated
+    || !finalStatus.clean
+    || finalStatus.lastCommit?.hash.toLowerCase() !== targetCommit
+  ) {
+    throw new ProjectGitError(
+      'Canonical deployment did not converge the remote and live checkout on the approved target.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  return finalStatus;
+}
+
+export async function readProjectGitRemoteDefaultBranch(projectRoot: string): Promise<string> {
+  const status = await readProjectGitStatus(projectRoot);
+  if (!status.repository || !status.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  const result = await runGit(status.repositoryRoot, ['ls-remote', '--symref', 'origin', 'HEAD']);
+  if (!result.ok) {
+    throw new ProjectGitError(
+      result.stderr.trim() || 'Unable to discover the origin default branch.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const match = /^ref:\s+refs\/heads\/([^\t\r\n]+)\s+HEAD$/m.exec(result.stdout);
+  if (!match?.[1]) {
+    throw new ProjectGitError('Origin did not advertise a default branch.', 'GIT_COMMAND_FAILED');
+  }
+  return validateBranchName(match[1]);
+}
+
+export async function projectGitRefMatchesRevision(
+  projectRoot: string,
+  shaInput: unknown,
+  refInput: unknown,
+  options: { fetchOriginBranch?: string } = {},
+): Promise<boolean> {
+  const sha = validateRevisionSha(shaInput);
+  const ref = validateRevisionRef(refInput);
+  const status = await readProjectGitStatus(projectRoot);
+  if (!status.repository || !status.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  if (options.fetchOriginBranch) {
+    const branch = validateBranchName(options.fetchOriginBranch);
+    const fetched = await runGit(status.repositoryRoot, [
+      'fetch',
+      '--prune',
+      'origin',
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
+    if (!fetched.ok) {
+      throw new ProjectGitError(fetched.stderr.trim() || `Unable to fetch origin/${branch}.`, 'GIT_COMMAND_FAILED');
+    }
+  }
+  const [expected, actual] = await Promise.all([
+    runGit(status.repositoryRoot, ['rev-parse', '--verify', `${sha}^{commit}`]),
+    runGit(status.repositoryRoot, ['rev-parse', '--verify', `${ref}^{commit}`]),
+  ]);
+  return expected.ok && actual.ok && expected.stdout.trim() === actual.stdout.trim();
+}
+
+export async function readProjectGitRefRevision(
+  projectRoot: string,
+  refInput: unknown,
+  options: { fetchOriginBranch?: string } = {},
+): Promise<string> {
+  const ref = validateRevisionRef(refInput);
+  const status = await readProjectGitStatus(projectRoot);
+  if (!status.repository || !status.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  if (options.fetchOriginBranch) {
+    const branch = validateBranchName(options.fetchOriginBranch);
+    const fetched = await runGit(status.repositoryRoot, [
+      'fetch',
+      '--prune',
+      'origin',
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
+    if (!fetched.ok) {
+      throw new ProjectGitError(fetched.stderr.trim() || `Unable to fetch origin/${branch}.`, 'GIT_COMMAND_FAILED');
+    }
+  }
+  const result = await runGit(status.repositoryRoot, ['rev-parse', '--verify', `${ref}^{commit}`]);
+  if (!result.ok) {
+    throw new ProjectGitError(
+      result.stderr.trim() || `Unable to resolve Git ref ${ref}.`,
+      'INVALID_GIT_REQUEST',
+    );
+  }
+  return validateRevisionSha(result.stdout.trim());
+}
+
+async function readProjectGitTreeEntry(
+  repositoryRoot: string,
+  revision: string,
+  filePath: string,
+): Promise<{ mode: string; type: string; object: string; path: string } | null> {
+  const result = await runGitBuffer(repositoryRoot, [
+    '--literal-pathspecs',
+    'ls-tree',
+    '-z',
+    revision,
+    '--',
+    filePath,
+  ]);
+  if (!result.ok) {
+    throw new ProjectGitError(
+      result.stderr.trim() || `Unable to inspect ${filePath} at ${revision.slice(0, 8)}.`,
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const records = result.stdout.toString('utf8').split('\0').filter(Boolean);
+  if (records.length === 0) return null;
+  const match = records.length === 1
+    ? /^([0-7]{6}) ([a-z]+) ([a-f0-9]+)\t([\s\S]+)$/i.exec(records[0]!)
+    : null;
+  if (!match || match[4] !== filePath) {
+    throw new ProjectGitError(`Git returned an invalid tree entry for ${filePath}.`, 'GIT_COMMAND_FAILED');
+  }
+  return {
+    mode: match[1]!,
+    type: match[2]!,
+    object: match[3]!,
+    path: match[4]!,
+  };
+}
+
+export async function verifyProjectGitLinearAttestation(
+  projectRoot: string,
+  input: {
+    baseCommit: string;
+    implementationCommit: string;
+    attestationCommit: string;
+    appPath: string;
+    receiptPath: string;
+  },
+): Promise<void> {
+  const baseCommit = validateRevisionSha(input.baseCommit);
+  const implementationCommit = validateRevisionSha(input.implementationCommit);
+  const attestationCommit = validateRevisionSha(input.attestationCommit);
+  const paths = validateCommitPaths([input.appPath, input.receiptPath]);
+  const appPath = paths[0]!;
+  const receiptPath = paths[1]!;
+  if (new Set([baseCommit, implementationCommit, attestationCommit]).size !== 3) {
+    throw new ProjectGitError('Attestation commits must be distinct.', 'INVALID_GIT_REQUEST');
+  }
+  const status = await readProjectGitStatus(projectRoot);
+  if (!status.repository || !status.repositoryRoot) {
+    throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
+  }
+  const [implementationParents, attestationParents] = await Promise.all([
+    runGit(status.repositoryRoot, ['rev-list', '--parents', '-n', '1', implementationCommit]),
+    runGit(status.repositoryRoot, ['rev-list', '--parents', '-n', '1', attestationCommit]),
+  ]);
+  if (!implementationParents.ok || !attestationParents.ok) {
+    throw new ProjectGitError('Unable to inspect Core UI attestation commit parents.', 'GIT_COMMAND_FAILED');
+  }
+  const implementationLine = implementationParents.stdout.trim().split(/\s+/);
+  const attestationLine = attestationParents.stdout.trim().split(/\s+/);
+  if (
+    implementationLine.length !== 2
+    || implementationLine[0] !== implementationCommit
+    || implementationLine[1] !== baseCommit
+    || attestationLine.length !== 2
+    || attestationLine[0] !== attestationCommit
+    || attestationLine[1] !== implementationCommit
+  ) {
+    throw new ProjectGitError(
+      'Core UI delivery must be the exact linear base → implementation → attestation sequence with no merge commits.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const implementationChanged = await runGitBuffer(status.repositoryRoot, [
+    '--literal-pathspecs',
+    'diff-tree',
+    '--no-commit-id',
+    '--name-only',
+    '-r',
+    '-z',
+    baseCommit,
+    implementationCommit,
+  ]);
+  if (!implementationChanged.ok) {
+    throw new ProjectGitError(
+      implementationChanged.stderr.trim() || 'Unable to inspect Core UI implementation changes.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const implementationChangedPaths = implementationChanged.stdout
+    .toString('utf8')
+    .split('\0')
+    .filter(Boolean);
+  const implementationRoots = [
+    '99_System/core-v2/apps/web/src/',
+    '99_System/core-v2/apps/web/static/',
+  ];
+  const protectedAttestationRoot =
+    '99_System/core-v2/apps/web/static/open-design/attestations/';
+  if (implementationChangedPaths.some((filePath) =>
+    !implementationRoots.some((root) => filePath.startsWith(root))
+    || filePath.startsWith(protectedAttestationRoot))) {
+    throw new ProjectGitError(
+      'Core UI implementation commit may change only web source/static files and may not change the attestation receipt store.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  for (const filePath of implementationChangedPaths) {
+    const entry = await readProjectGitTreeEntry(
+      status.repositoryRoot,
+      implementationCommit,
+      filePath,
+    );
+    if (
+      entry !== null
+      && (
+        entry.type !== 'blob'
+        || (entry.mode !== '100644' && entry.mode !== '100755')
+      )
+    ) {
+      throw new ProjectGitError(
+        'Core UI implementation files must be deleted or ordinary 100644/100755 blobs.',
+        'GIT_COMMAND_FAILED',
+      );
+    }
+  }
+  const changed = await runGitBuffer(status.repositoryRoot, [
+    '--literal-pathspecs',
+    'diff-tree',
+    '--no-commit-id',
+    '--name-only',
+    '-r',
+    '-z',
+    implementationCommit,
+    attestationCommit,
+  ]);
+  if (!changed.ok) {
+    throw new ProjectGitError(
+      changed.stderr.trim() || 'Unable to inspect Core UI attestation changes.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const changedPaths = changed.stdout.toString('utf8').split('\0').filter(Boolean).sort();
+  const expectedPaths = [appPath, receiptPath].sort();
+  if (
+    changedPaths.length !== expectedPaths.length
+    || changedPaths.some((filePath, index) => filePath !== expectedPaths[index])
+  ) {
+    throw new ProjectGitError(
+      'Core UI attestation commit may change only the app template sentinel and the unique receipt.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
+  const [implementationApp, implementationReceipt, attestationApp, attestationReceipt] = await Promise.all([
+    readProjectGitTreeEntry(status.repositoryRoot, implementationCommit, appPath),
+    readProjectGitTreeEntry(status.repositoryRoot, implementationCommit, receiptPath),
+    readProjectGitTreeEntry(status.repositoryRoot, attestationCommit, appPath),
+    readProjectGitTreeEntry(status.repositoryRoot, attestationCommit, receiptPath),
+  ]);
+  if (
+    !implementationApp
+    || implementationApp.mode !== '100644'
+    || implementationApp.type !== 'blob'
+    || implementationReceipt !== null
+    || !attestationApp
+    || attestationApp.mode !== '100644'
+    || attestationApp.type !== 'blob'
+    || !attestationReceipt
+    || attestationReceipt.mode !== '100644'
+    || attestationReceipt.type !== 'blob'
+  ) {
+    throw new ProjectGitError(
+      'Core UI attestation files must be ordinary 100644 blobs and the receipt must be new in the attestation commit.',
+      'GIT_COMMAND_FAILED',
+    );
+  }
 }

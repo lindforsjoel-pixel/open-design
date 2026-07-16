@@ -30,7 +30,11 @@ import {
   readCodexRolloutFirstCall,
 } from '../codex-rollout-usage.js';
 import type { ConnectorService } from '../connectors/service.js';
-import type { DesignWorkflowService } from '../design-systems/workflow.js';
+import {
+  isUserDesignWorkflowProject,
+  parseDesignWorkflowApprovalPrompt,
+  type DesignWorkflowService,
+} from '../design-systems/workflow.js';
 import {
   getConversation,
   getProject,
@@ -509,6 +513,12 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
     const requestBody = toJsonRecord(req.body);
+    const workflowPrompt = typeof requestBody.currentPrompt === 'string'
+      ? requestBody.currentPrompt
+      : typeof requestBody.message === 'string'
+        ? requestBody.message
+        : '';
+    const directApproval = parseDesignWorkflowApprovalPrompt(workflowPrompt);
     const mediaExecution = parseMediaExecutionPolicyInput(requestBody.mediaExecution);
     if (!mediaExecution.ok) {
       return sendApiError(res, 400, 'BAD_REQUEST', mediaExecution.message);
@@ -518,7 +528,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 400, 'BAD_REQUEST', toolBundle.message);
     }
     let resolvedSnapshot = null;
-    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+    if (!directApproval && typeof requestBody.projectId === 'string' && requestBody.projectId) {
       let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
       try {
         registryView = await loadPluginRegistryView();
@@ -592,7 +602,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         throw err;
       }
     }
-    if (typeof meta.agentId !== 'string' || !meta.agentId) {
+    if (!directApproval && (typeof meta.agentId !== 'string' || !meta.agentId)) {
       try {
         const appCfg = await readAppConfig(RUNTIME_DATA_DIR);
         const cfgAgent = typeof appCfg.agentId === 'string' && appCfg.agentId
@@ -614,18 +624,20 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[runs] agent id fallback failed', err);
       }
     }
-    const toolBundleSupport = validateRunToolBundleForAgent(
-      toolBundle.bundle,
-      typeof meta.agentId === 'string' ? getAgentDef(meta.agentId) : null,
-      {
-        deliveryTarget: runToolBundleDeliveryTargetForProject(
-          meta.projectId,
-          runProject?.metadata,
-        ),
-      },
-    );
-    if (!toolBundleSupport.ok) {
-      return sendApiError(res, 400, 'BAD_REQUEST', toolBundleSupport.message);
+    if (!directApproval) {
+      const toolBundleSupport = validateRunToolBundleForAgent(
+        toolBundle.bundle,
+        typeof meta.agentId === 'string' ? getAgentDef(meta.agentId) : null,
+        {
+          deliveryTarget: runToolBundleDeliveryTargetForProject(
+            meta.projectId,
+            runProject?.metadata,
+          ),
+        },
+      );
+      if (!toolBundleSupport.ok) {
+        return sendApiError(res, 400, 'BAD_REQUEST', toolBundleSupport.message);
+      }
     }
     if (runProject?.metadata) {
       meta.projectMetadata = runProject.metadata;
@@ -710,37 +722,99 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           }
         : {}),
     };
+    const requestProjectId = typeof requestBody.projectId === 'string'
+      ? requestBody.projectId
+      : null;
     let designWorkflowCaptureError: Error | null = null;
+    let designWorkflowCaptured = false;
     if (run.projectId) {
       try {
-        await designWorkflow.captureRunStart(run.id, run.projectId);
+        await designWorkflow.captureRunStart(
+          run.id,
+          run.projectId,
+          typeof meta.currentPrompt === 'string'
+            ? meta.currentPrompt
+            : typeof meta.message === 'string'
+              ? meta.message
+              : '',
+        );
+        designWorkflowCaptured = true;
       } catch (error) {
         designWorkflowCaptureError = error instanceof Error ? error : new Error(String(error));
         console.warn('[design-workflow] unable to capture run baseline', designWorkflowCaptureError);
       }
     }
-    res.status(202).json(body);
-    if (!designWorkflowCaptureError && resolvedSnapshot?.ok && resolvedSnapshot.snapshot.pipeline) {
-      firePipelineForRun({
-        run,
-        snapshot: resolvedSnapshot.snapshot,
-        runs: design.runs,
-        db,
+    let completeDesignWorkflowOnce: ((succeeded: boolean) => Promise<void>) | null = null;
+    if (designWorkflowCaptured && requestProjectId) {
+      let completionStarted = false;
+      completeDesignWorkflowOnce = async (succeeded: boolean) => {
+        if (completionStarted) return;
+        completionStarted = true;
+        await designWorkflow.completeRun({
+          runId: run.id,
+          projectId: requestProjectId,
+          prompt: workflowPrompt,
+          succeeded,
+        });
+      };
+      design.runs.wait(run).then((status: TerminalRunStatus) =>
+        completeDesignWorkflowOnce?.(
+          runResultFromStatus(status.status) === 'success',
+        ),
+      ).catch((error) => {
+        console.warn('[design-workflow] run completion hook failed', error);
       });
     }
-    reconcileAssistantMessageOnRunEnd(db, design.runs, run);
-    if (run.projectId && run.conversationId) {
-      try {
-        const project = toProjectRecord(getProject(db, run.projectId));
-        const projectRoot = resolveProjectDir(PROJECTS_DIR, run.projectId, project?.metadata);
-        detectSkillPluginCandidateOnRunSuccess(db, design.runs, run, requestBody, projectRoot);
-      } catch (err) {
-        console.warn('[plugins] skill candidate hook setup failed', err);
+    try {
+      if (!designWorkflowCaptureError && resolvedSnapshot?.ok && resolvedSnapshot.snapshot.pipeline) {
+        firePipelineForRun({
+          run,
+          snapshot: resolvedSnapshot.snapshot,
+          runs: design.runs,
+          db,
+        });
       }
+      reconcileAssistantMessageOnRunEnd(db, design.runs, run);
+      if (run.projectId && run.conversationId) {
+        try {
+          const project = toProjectRecord(getProject(db, run.projectId));
+          const projectRoot = resolveProjectDir(PROJECTS_DIR, run.projectId, project?.metadata);
+          detectSkillPluginCandidateOnRunSuccess(db, design.runs, run, requestBody, projectRoot);
+        } catch (err) {
+          console.warn('[plugins] skill candidate hook setup failed', err);
+        }
+      }
+      design.runs.start(
+        run,
+        designWorkflowCaptureError
+          ? async () => { throw designWorkflowCaptureError; }
+          : directApproval && completeDesignWorkflowOnce
+            ? async () => {
+                await completeDesignWorkflowOnce(true);
+              }
+            : () => startChatRun(meta, run),
+      );
+    } catch (error) {
+      const setupError = error instanceof Error ? error : new Error(String(error));
+      if (completeDesignWorkflowOnce) {
+        await completeDesignWorkflowOnce(false).catch((cleanupError) => {
+          console.warn(
+            `[design-workflow] synchronous run cleanup failed for ${run.id}`,
+            cleanupError,
+          );
+        });
+      }
+      await design.runs.cancel(run).catch((cancelError) => {
+        console.warn(`[runs] unable to cancel synchronously failed run ${run.id}`, cancelError);
+      });
+      return sendApiError(
+        res,
+        500,
+        'AGENT_EXECUTION_FAILED',
+        setupError.message,
+      );
     }
-    design.runs.start(run, designWorkflowCaptureError
-      ? async () => { throw designWorkflowCaptureError; }
-      : () => startChatRun(meta, run));
+    res.status(202).json(body);
 
     const reqBody = requestBody;
     const analyticsHints =
@@ -751,24 +825,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     // Marks the AI-optimize (deep enrichment) run so completion can flag the DS
     // ai_refined even when analytics is unavailable or disabled.
     const hintDsEnrichment = analyticsHints.dsEnrichment === true;
-    const requestProjectId = typeof reqBody.projectId === 'string' ? reqBody.projectId : null;
-    if (requestProjectId) {
-      const workflowPrompt = typeof reqBody.currentPrompt === 'string'
-        ? reqBody.currentPrompt
-        : typeof reqBody.message === 'string'
-          ? reqBody.message
-          : '';
-      design.runs.wait(run).then((status: TerminalRunStatus) =>
-        designWorkflow.completeRun({
-          runId: run.id,
-          projectId: requestProjectId,
-          prompt: workflowPrompt,
-          succeeded: runResultFromStatus(status.status) === 'success',
-        }),
-      ).catch((error) => {
-        console.warn('[design-workflow] run completion hook failed', error);
-      });
-    }
     if (hintDsEnrichment && requestProjectId) {
       design.runs.wait(run).then((status: TerminalRunStatus) => {
         if (runResultFromStatus(status.status) !== 'success') return;
@@ -1492,6 +1548,14 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         }
         throw err;
       }
+    }
+    if (isUserDesignWorkflowProject(chatProject)) {
+      return sendApiError(
+        res,
+        409,
+        'DESIGN_WORKFLOW_RUN_REQUIRED',
+        'Projects using a user design system must run through /api/runs so Open Design can protect revisions, approvals, and recovery.',
+      );
     }
     const toolBundleSupport = validateRunToolBundleForAgent(
       toolBundle.bundle,

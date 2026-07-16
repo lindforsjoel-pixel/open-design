@@ -3524,6 +3524,7 @@ export async function startServer({
     mediaHintSignal,
     platformHintSignal,
     workflowPrompt,
+    workflowRunId,
   }) => {
     const project =
       typeof projectId === 'string' && projectId
@@ -3911,9 +3912,10 @@ export async function startServer({
         designWorkflowInstructions = await designWorkflow.promptContext(
           project.id,
           typeof workflowPrompt === 'string' ? workflowPrompt : '',
+          typeof workflowRunId === 'string' ? workflowRunId : undefined,
         );
       } catch (error) {
-        console.warn('[design-workflow] prompt context unavailable', error);
+        throw error;
       }
     }
 
@@ -4640,6 +4642,7 @@ export async function startServer({
         workflowPrompt: typeof currentPrompt === 'string' && currentPrompt
           ? currentPrompt
           : message,
+        workflowRunId: run.id,
       });
 
     run.designSystemId = designSystemSelection?.id ?? null;
@@ -8058,12 +8061,44 @@ export async function startServer({
     });
     pinAssistantMessageOnRunCreate(db, run);
     reconcileAssistantMessageOnRunEnd(db, design.runs, run);
-    design.runs.start(run, () => startChatRun(meta, run));
-    const finalStatus = await design.runs.wait(run);
-    return {
-      runId: run.id,
-      succeeded: runResultFromStatus(finalStatus.status) === 'success',
-    };
+    try {
+      await designWorkflow.captureRunStart(run.id, projectId, command);
+    } catch (error) {
+      design.runs.start(run, async () => {
+        throw error;
+      });
+      await design.runs.wait(run);
+      return { runId: run.id, succeeded: false };
+    }
+    let completionAttempted = false;
+    try {
+      design.runs.start(run, () => startChatRun(meta, run));
+      const finalStatus = await design.runs.wait(run);
+      const succeeded = runResultFromStatus(finalStatus.status) === 'success';
+      completionAttempted = true;
+      await designWorkflow.completeRun({
+        runId: run.id,
+        projectId,
+        prompt: command,
+        succeeded,
+      });
+      return { runId: run.id, succeeded };
+    } catch (error) {
+      if (!completionAttempted) {
+        await designWorkflow.completeRun({
+          runId: run.id,
+          projectId,
+          prompt: command,
+          succeeded: false,
+        }).catch((cleanupError) => {
+          console.warn(
+            `[design-workflow] automatic ${command} cleanup failed for ${projectId}`,
+            cleanupError,
+          );
+        });
+      }
+      throw error;
+    }
   }
 
   queueDesignWorkflowSubscriberUpdate = (projectId) => {
@@ -8083,13 +8118,6 @@ export async function startServer({
           }
           status = await designWorkflow.statusForProject(projectId);
           if (status.role !== 'subscriber' || status.subscription?.targetSha !== expectedTargetSha) return;
-          await designWorkflow.completeRun({
-            runId: updateRun.runId,
-            projectId,
-            prompt: '/update',
-            succeeded: true,
-          });
-          status = await designWorkflow.statusForProject(projectId);
         }
 
         if (
@@ -8109,12 +8137,6 @@ export async function startServer({
           || status.subscription?.appliedSha !== expectedDeliverySha
           || status.subscription.targetSha !== expectedDeliverySha
         ) return;
-        await designWorkflow.completeRun({
-          runId: pushRun.runId,
-          projectId,
-          prompt: '/push',
-          succeeded: true,
-        });
       });
     automaticDesignWorkflowUpdates.set(projectId, task);
     void task
