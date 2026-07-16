@@ -34,7 +34,7 @@ export interface DesignWorkflowSubscription {
 }
 
 export type DesignWorkflowDeliveryAdapter = 'core-ui' | 'wordpress-draft';
-export type DesignWorkflowDeliveryStatus = 'ready_for_approval' | 'failed' | 'deployed';
+export type DesignWorkflowDeliveryStatus = 'ready_for_approval' | 'approving' | 'failed' | 'deployed';
 
 export interface DesignWorkflowDelivery {
   id: string;
