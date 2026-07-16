@@ -3887,12 +3887,16 @@ export async function startServer({
       try {
         const useTargetRevision = typeof workflowPrompt === 'string'
           && workflowPrompt.trim().toLowerCase().startsWith('/update');
-        const workflowStatus = await designWorkflow.statusForProject(project.id);
+        const workflowStatus = await designWorkflow.statusForProject(
+          project.id,
+          typeof workflowRunId === 'string' ? workflowRunId : undefined,
+        );
         if (workflowStatus.role === 'subscriber') {
           const revisionBody = await designWorkflow.readAppliedFile(
             project.id,
             'DESIGN.md',
             useTargetRevision,
+            typeof workflowRunId === 'string' ? workflowRunId : undefined,
           );
           if (revisionBody) {
             designSystemBody = revisionBody;

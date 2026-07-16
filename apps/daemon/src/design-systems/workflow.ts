@@ -1565,7 +1565,7 @@ interface CapturedWorkflowRun {
 
 export interface DesignWorkflowService {
   initializeProject(projectId: string): Promise<DesignWorkflowStatusResponse>;
-  statusForProject(projectId: string): Promise<DesignWorkflowStatusResponse>;
+  statusForProject(projectId: string, runId?: string): Promise<DesignWorkflowStatusResponse>;
   updateAll(projectId: string): Promise<DesignWorkflowUpdateAllResponse>;
   publish(projectId: string): Promise<DesignWorkflowStatusResponse>;
   rollback(projectId: string, sha: string): Promise<DesignWorkflowStatusResponse>;
@@ -1574,7 +1574,12 @@ export interface DesignWorkflowService {
   captureRunStart(runId: string, projectId: string, prompt?: string): Promise<void>;
   completeRun(input: { runId: string; projectId: string; prompt: string; succeeded: boolean }): Promise<void>;
   promptContext(projectId: string, prompt: string, runId?: string): Promise<string>;
-  readAppliedFile(projectId: string, filePath: string, useTarget?: boolean): Promise<string | null>;
+  readAppliedFile(
+    projectId: string,
+    filePath: string,
+    useTarget?: boolean,
+    runId?: string,
+  ): Promise<string | null>;
   approveDelivery(
     projectId: string,
     deliveryId: string,
@@ -1638,6 +1643,9 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     implementationDigest: string;
   }>();
   const capturedRunLocks = new Map<string, () => void>();
+  const capturedRunProjects = new Map<string, string>();
+  const capturedProjectRuns = new Map<string, string>();
+  const capturedRunStatuses = new Map<string, DesignWorkflowStatusResponse>();
   const projectLockTails = new Map<string, Promise<void>>();
   db.prepare(`
     UPDATE design_workflow_delivery_challenges
@@ -1687,6 +1695,22 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     } finally {
       release();
     }
+  }
+
+  async function withCapturedRunLock<T>(
+    projectId: string,
+    runId: string | undefined,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    if (!runId) return withProjectLock(projectId, run);
+    const capturedProjectId = capturedRunProjects.get(runId);
+    if (!capturedProjectId) return withProjectLock(projectId, run);
+    if (capturedProjectId !== projectId) {
+      throw new Error(
+        `Run ${runId} holds the design-workflow lock for ${capturedProjectId}, not ${projectId}.`,
+      );
+    }
+    return run();
   }
 
   function rootFor(project: WorkflowProject): string {
@@ -2594,8 +2618,59 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     return withProjectLock(projectId, () => initializeProjectUnlocked(projectId));
   }
 
-  async function statusForProject(projectId: string): Promise<DesignWorkflowStatusResponse> {
-    return withProjectLock(projectId, () => initializeProjectUnlocked(projectId));
+  function projectStatusSnapshot(projectId: string): DesignWorkflowStatusResponse | null {
+    const project = getProject(db, projectId);
+    const designSystemId = project?.designSystemId;
+    if (!project || !designSystemId?.startsWith('user:')) return null;
+    const source = sourceFor(designSystemId);
+    if (!source) return null;
+    const revision = latestDesignWorkflowRevision(db, designSystemId);
+    if (!revision) return null;
+    if (project.id === source.id) {
+      return {
+        projectId,
+        role: 'source',
+        designSystemId,
+        sourceProjectId: source.id,
+        status: 'up_to_date',
+        currentRevision: revision,
+        subscription: null,
+        subscriberCount: listDesignWorkflowSubscriptions(db, designSystemId).length,
+        delivery: latestDesignWorkflowDelivery(db, projectId),
+      };
+    }
+    const subscription = getDesignWorkflowSubscription(db, projectId);
+    return {
+      projectId,
+      role: 'subscriber',
+      designSystemId,
+      sourceProjectId: source.id,
+      status: subscription?.status ?? 'update_needed',
+      currentRevision: revision,
+      subscription,
+      subscriberCount: listDesignWorkflowSubscriptions(db, designSystemId).length,
+      delivery: latestDesignWorkflowDelivery(db, projectId),
+    };
+  }
+
+  async function statusForProject(
+    projectId: string,
+    runId?: string,
+  ): Promise<DesignWorkflowStatusResponse> {
+    if (!runId) {
+      const activeRunId = capturedProjectRuns.get(projectId);
+      const snapshot = activeRunId ? capturedRunStatuses.get(activeRunId) : null;
+      if (snapshot) return snapshot;
+    }
+    const status = await withCapturedRunLock(
+      projectId,
+      runId,
+      () => initializeProjectUnlocked(projectId),
+    );
+    if (runId && capturedRunProjects.get(runId) === projectId) {
+      capturedRunStatuses.set(runId, status);
+    }
+    return status;
   }
 
   async function rollback(projectId: string, sha: string): Promise<DesignWorkflowStatusResponse> {
@@ -2733,6 +2808,7 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
       if (command !== '/approve' && approvalState.active) {
         throw new Error('A delivery approval is in progress; project mutations are unavailable until it finishes.');
       }
+      const capturedStatus = projectStatusSnapshot(projectId);
       if (command === '/approve') {
         const approval = parseDesignWorkflowApprovalPrompt(prompt);
         if (!approval) throw new Error('Use /approve <delivery-id> <implementation-digest>.');
@@ -2758,6 +2834,9 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
         const git = await prepareProjectGitRevisionBase(root);
         if (!git.repository) {
           capturedRunLocks.set(runId, release);
+          capturedRunProjects.set(runId, projectId);
+          capturedProjectRuns.set(projectId, runId);
+          if (capturedStatus) capturedRunStatuses.set(runId, capturedStatus);
           keepLock = true;
           return;
         }
@@ -2782,6 +2861,9 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
         capturedRuns.set(runId, captured);
       }
       capturedRunLocks.set(runId, release);
+      capturedRunProjects.set(runId, projectId);
+      capturedProjectRuns.set(projectId, runId);
+      if (capturedStatus) capturedRunStatuses.set(runId, capturedStatus);
       keepLock = true;
     } finally {
       if (!keepLock) {
@@ -3218,16 +3300,26 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
               .join(' '),
           );
         }
-        capturedRuns.delete(input.runId);
       }
+      capturedRuns.delete(input.runId);
+      capturedRunProjects.delete(input.runId);
+      if (capturedProjectRuns.get(input.projectId) === input.runId) {
+        capturedProjectRuns.delete(input.projectId);
+      }
+      capturedRunStatuses.delete(input.runId);
       ACTIVE_DESIGN_WORKFLOW_APPROVAL_RUNS.delete(input.runId);
       release();
     }
     if (completionError != null) throw completionError;
   }
 
-  async function readAppliedFile(projectId: string, filePath: string, useTarget = false): Promise<string | null> {
-    const status = await initializeProjectUnlocked(projectId);
+  async function readAppliedFile(
+    projectId: string,
+    filePath: string,
+    useTarget = false,
+    runId?: string,
+  ): Promise<string | null> {
+    const status = await statusForProject(projectId, runId);
     const sha = status.subscription
       ? (useTarget ? status.subscription.targetSha : status.subscription.appliedSha)
       : status.currentRevision.sha;
@@ -3238,7 +3330,7 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
   }
 
   async function promptContext(projectId: string, prompt: string, runId?: string): Promise<string> {
-    const status = await initializeProjectUnlocked(projectId);
+    const status = await statusForProject(projectId, runId);
     const subscription = status.subscription;
     if (!subscription) {
       return [
