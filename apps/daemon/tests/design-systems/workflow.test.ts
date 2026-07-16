@@ -1416,6 +1416,19 @@ describe('design workflow automatic propagation', () => {
     await expect(initialization).resolves.toEqual(expect.objectContaining({ role: 'subscriber' }));
 
     await service.captureRunStart('run-lock-source', 'source', 'Hold source lock.');
+    await expect(
+      service.statusForProject('source', 'run-lock-source'),
+    ).resolves.toEqual(expect.objectContaining({ role: 'source' }));
+    await expect(
+      service.readAppliedFile('source', 'DESIGN.md', false, 'run-lock-source'),
+    ).resolves.toBeNull();
+    await expect(
+      service.promptContext('source', 'Hold source lock.', 'run-lock-source'),
+    ).resolves.toContain('Design workflow source revision');
+    await expect(
+      service.statusForProject('asset', 'run-lock-source'),
+    ).rejects.toThrow('holds the design-workflow lock for source, not asset');
+
     let published = false;
     const publication = service.publish('source').then((status) => {
       published = true;
