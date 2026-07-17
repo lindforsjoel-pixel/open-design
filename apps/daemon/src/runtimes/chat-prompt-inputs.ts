@@ -967,5 +967,6 @@ export function selectPromptImagePaths(
   safeImages: string[],
   amrStagedImages: string[],
 ) {
+  if (agentId === 'codex') return [];
   return agentId === 'amr' ? amrStagedImages : safeImages;
 }

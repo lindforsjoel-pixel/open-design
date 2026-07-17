@@ -22,6 +22,16 @@ test('selectPromptImagePaths keeps original paths for non-AMR agents', () => {
   ).toEqual(['/tmp/od-uploads/original.png']);
 });
 
+test('selectPromptImagePaths leaves Codex images to native CLI flags', () => {
+  expect(
+    selectPromptImagePaths(
+      'codex',
+      ['/tmp/od-uploads/original.png'],
+      ['/project/.amr-attachments/staged.png'],
+    ),
+  ).toEqual([]);
+});
+
 test('resolveSafePromptImagePaths rejects images larger than 1 MB', () => {
   const result = resolveSafePromptImagePaths(
     ['/tmp/od-uploads/too-large.png', '/tmp/od-uploads/ok.png'],
