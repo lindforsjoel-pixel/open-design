@@ -44,18 +44,84 @@ export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | nu
   return out.length > 1 ? out : null;
 }
 
+type CodexExecutionPolicy =
+  | {
+      kind: 'permission-profile';
+      profile: string;
+    }
+  | {
+      kind: 'legacy-sandbox';
+      sandbox: 'workspace-write' | 'danger-full-access';
+      workspaceNetworkAccess: boolean;
+    };
+
+const DEFAULT_OPEN_DESIGN_CODEX_PROFILE = 'open-design';
+const CODEX_PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export function resolveCodexExecutionPolicy(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): CodexExecutionPolicy {
+  const requestedSandbox = env.OD_CODEX_SANDBOX?.trim();
+  const requestedProfile = env.OD_CODEX_PERMISSION_PROFILE?.trim();
+
+  if (requestedSandbox && requestedProfile) {
+    throw new Error(
+      'Configure either OD_CODEX_PERMISSION_PROFILE or OD_CODEX_SANDBOX, not both.',
+    );
+  }
+
+  if (requestedSandbox === 'danger-full-access') {
+    if (env.OD_CODEX_ALLOW_DANGER_FULL_ACCESS !== '1') {
+      throw new Error(
+        'OD_CODEX_SANDBOX=danger-full-access requires OD_CODEX_ALLOW_DANGER_FULL_ACCESS=1.',
+      );
+    }
+    return {
+      kind: 'legacy-sandbox',
+      sandbox: 'danger-full-access',
+      workspaceNetworkAccess: false,
+    };
+  }
+
+  if (requestedSandbox && requestedSandbox !== 'workspace-write') {
+    throw new Error(
+      `Unsupported OD_CODEX_SANDBOX value: ${requestedSandbox}.`,
+    );
+  }
+
+  if (requestedSandbox === 'workspace-write') {
+    return {
+      kind: 'legacy-sandbox',
+      sandbox: 'workspace-write',
+      workspaceNetworkAccess: true,
+    };
+  }
+
+  const windowsLike = platform === 'win32' || Boolean(env.WSL_DISTRO_NAME?.trim());
+  const profile = requestedProfile || (windowsLike ? DEFAULT_OPEN_DESIGN_CODEX_PROFILE : '');
+  if (profile) {
+    if (!CODEX_PROFILE_NAME_PATTERN.test(profile)) {
+      throw new Error(
+        `Invalid OD_CODEX_PERMISSION_PROFILE value: ${profile}.`,
+      );
+    }
+    return { kind: 'permission-profile', profile };
+  }
+
+  return {
+    kind: 'legacy-sandbox',
+    sandbox: 'workspace-write',
+    workspaceNetworkAccess: true,
+  };
+}
+
 export function codexNeedsDangerFullAccessSandbox(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  // Operator override for deployments where Codex cannot create its
-  // workspace-write sandbox, for example unprivileged Linux containers.
-  // Only danger-full-access is accepted; unknown values keep the default path.
-  if (env.OD_CODEX_SANDBOX?.trim() === 'danger-full-access') return true;
-  if (platform === 'win32') return true;
-  // WSL reports `linux` but Codex still hits the Windows read-only
-  // workspace-write sandbox path when launched from there (#2834).
-  return Boolean(env.WSL_DISTRO_NAME?.trim());
+  const policy = resolveCodexExecutionPolicy(platform, env);
+  return policy.kind === 'legacy-sandbox' && policy.sandbox === 'danger-full-access';
 }
 
 export const codexAgentDef = {
@@ -110,13 +176,13 @@ export const codexAgentDef = {
       options = {},
       runtimeContext = {},
     ) => {
-      // Codex CLI's `workspace-write` sandbox blocks shell invocations on
-      // Windows ("powershell.exe ... rejected: blocked by policy", #1721),
-      // because Codex has no working OS-level sandbox on Windows and falls
-      // back to a coarse policy that rejects any shell. macOS (Seatbelt)
-      // and Linux (Landlock+seccomp) keep workspace-write because their
-      // sandbox enforcement permits shell while restricting writes.
-      const needsDangerFullAccess = codexNeedsDangerFullAccessSandbox();
+      // WSL and native Windows use a dedicated Codex permission profile.
+      // The profile is loaded before `exec` and strict config validation makes
+      // missing or version-incompatible profiles fail closed instead of
+      // silently falling back to unrestricted execution. macOS and ordinary
+      // Linux keep the legacy workspace-write sandbox unless the operator
+      // explicitly selects a profile.
+      const executionPolicy = resolveCodexExecutionPolicy();
       // Capture-style resume: when the daemon has a stored Codex thread id for
       // this conversation it asks the CLI to continue that session with
       // `exec resume <thread_id>` instead of `exec` (a fresh session). Codex
@@ -134,26 +200,48 @@ export const codexAgentDef = {
       // the create turn so Codex's per-turn `turn_context` block byte-matches
       // across turns and does not break the upstream prefix cache the resume
       // is meant to reuse.
-      const sandboxArgs = needsDangerFullAccess
-        ? resumeSessionId
-          ? ['-c', 'sandbox_mode="danger-full-access"']
-          : ['--sandbox', 'danger-full-access']
+      const globalArgs = executionPolicy.kind === 'permission-profile'
+        ? ['--strict-config', '--profile', executionPolicy.profile]
+        : [];
+      const sandboxArgs = executionPolicy.kind === 'permission-profile'
+        ? []
         : resumeSessionId
           ? [
               '-c',
-              'sandbox_mode="workspace-write"',
-              '-c',
-              'sandbox_workspace_write.network_access=true',
+              `sandbox_mode="${executionPolicy.sandbox}"`,
+              ...(executionPolicy.workspaceNetworkAccess
+                ? [
+                    '-c',
+                    'sandbox_workspace_write.network_access=true',
+                  ]
+                : []),
             ]
           : [
               '--sandbox',
-              'workspace-write',
-              '-c',
-              'sandbox_workspace_write.network_access=true',
+              executionPolicy.sandbox,
+              ...(executionPolicy.workspaceNetworkAccess
+                ? [
+                    '-c',
+                    'sandbox_workspace_write.network_access=true',
+                  ]
+                : []),
             ];
       const args = resumeSessionId
-        ? ['exec', 'resume', '--json', '--skip-git-repo-check', ...sandboxArgs]
-        : ['exec', '--json', '--skip-git-repo-check', ...sandboxArgs];
+        ? [
+            ...globalArgs,
+            'exec',
+            'resume',
+            '--json',
+            '--skip-git-repo-check',
+            ...sandboxArgs,
+          ]
+        : [
+            ...globalArgs,
+            'exec',
+            '--json',
+            '--skip-git-repo-check',
+            ...sandboxArgs,
+          ];
       if (process.env.OD_CODEX_DISABLE_PLUGINS === '1') {
         args.push('--disable', 'plugins');
       }

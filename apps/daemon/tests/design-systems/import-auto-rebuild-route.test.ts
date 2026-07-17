@@ -1,6 +1,7 @@
 import type http from 'node:http';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -102,6 +103,38 @@ describe('design-system import token contract auto-rebuild route', () => {
     });
     expect(body.tokenContractRebuild?.decision?.reason).toContain('no rebuild recommended');
     expect(body.tokenContractRebuild?.job).toBeUndefined();
+  });
+
+  it('records a repository-root local import as the governed workflow checkout', async () => {
+    const sourceRoot = makeImportSource(
+      'git-backed-import',
+      ':root { --color-primary: #3366ff; }\n',
+    );
+    execFileSync('git', ['init'], { cwd: sourceRoot });
+    execFileSync('git', ['config', 'user.name', 'Open Design Test'], { cwd: sourceRoot });
+    execFileSync('git', ['config', 'user.email', 'open-design-test@example.invalid'], {
+      cwd: sourceRoot,
+    });
+    execFileSync('git', ['add', '-A'], { cwd: sourceRoot });
+    execFileSync('git', ['commit', '-m', 'Initial design system'], { cwd: sourceRoot });
+
+    const body = await importDesignSystem(sourceRoot);
+    importedDesignSystems.push(body.designSystem.id);
+
+    const projectsResponse = await fetch(`${baseUrl}/api/projects`);
+    expect(projectsResponse.status).toBe(200);
+    const projectsBody = (await projectsResponse.json()) as {
+      projects: Array<{
+        designSystemId?: string;
+        metadata?: { designWorkflowSourceCheckout?: string };
+      }>;
+    };
+    const workspace = projectsBody.projects.find(
+      (project) => project.designSystemId === body.designSystem.id,
+    );
+    expect(workspace?.metadata?.designWorkflowSourceCheckout).toBe(
+      realpathSync.native(sourceRoot),
+    );
   });
 
   async function importDesignSystem(sourceRoot: string): Promise<ImportResponse> {

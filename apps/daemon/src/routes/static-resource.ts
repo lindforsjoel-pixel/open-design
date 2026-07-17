@@ -35,6 +35,12 @@ export interface RegisterAtomRoutesDeps {
 }
 
 export interface RegisterStaticResourceRoutesDeps extends RouteDeps<'http' | 'paths' | 'resources'> {
+  designSystemWorkspace?: {
+    linkImportedLocalCheckout?: (
+      designSystemId: string,
+      sourceRoot: string,
+    ) => Promise<void>;
+  };
   tokenContractRebuild?: {
     maybeStartForImportedDesignSystem?: (
       designSystemId: string,
@@ -722,6 +728,14 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
           'INTERNAL_ERROR',
           `imported design system was not found in catalog: ${result.dir}`,
         );
+      }
+      try {
+        await ctx.designSystemWorkspace?.linkImportedLocalCheckout?.(
+          designSystem.id,
+          sourceRoot,
+        );
+      } catch (err) {
+        console.warn('[design-systems] local checkout link failed', err);
       }
       res.status(201).json(await importedDesignSystemResponse(designSystem));
     } catch (err: any) {

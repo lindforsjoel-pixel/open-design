@@ -608,6 +608,7 @@ import { registerDeployRoutes, registerDeploymentCheckRoutes } from './routes/de
 import { registerMediaRoutes } from './routes/media.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './routes/project/index.js';
 import { registerProjectGitRoutes } from './routes/project-git.js';
+import { readProjectGitStatus } from './services/project-git.js';
 import { registerDesignWorkflowRoutes } from './routes/design-workflow.js';
 import { createDesignWorkflowService } from './design-systems/workflow.js';
 import { registerVelaRoutes } from './routes/vela.js';
@@ -3054,6 +3055,32 @@ export async function startServer({
       listAllSkillLikeEntries,
       listAllDesignSystems,
       mimeFor,
+    },
+    designSystemWorkspace: {
+      linkImportedLocalCheckout: async (designSystemId, sourceRoot) => {
+        const workspace = await ensureUserDesignSystemWorkspaceProject(db, designSystemId);
+        if (!workspace?.project) return;
+        const git = await readProjectGitStatus(sourceRoot);
+        if (!git.repository || !git.repositoryRoot) return;
+        const [canonicalSourceRoot, canonicalRepositoryRoot] = [
+          fs.realpathSync.native(sourceRoot),
+          fs.realpathSync.native(git.repositoryRoot),
+        ];
+        if (canonicalSourceRoot !== canonicalRepositoryRoot) {
+          console.warn(
+            `[design-systems] local checkout is nested inside a larger Git repository; `
+              + `governed revisions remain disabled for ${designSystemId}`,
+          );
+          return;
+        }
+        const current = workspace.project;
+        updateProject(db, current.id, {
+          metadata: {
+            ...(current.metadata ?? {}),
+            designWorkflowSourceCheckout: canonicalSourceRoot,
+          },
+        });
+      },
     },
     tokenContractRebuild: {
       maybeStartForImportedDesignSystem: async (designSystemId) => {

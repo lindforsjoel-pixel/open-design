@@ -43,6 +43,41 @@ describe('codex buildArgs session resume', () => {
     expect(args.some((a) => a.includes('sandbox_mode="workspace-write"'))).toBe(true);
   });
 
+  it('loads the hardened profile before `exec resume` on WSL without legacy sandbox flags', () => {
+    const previousWslDistro = process.env.WSL_DISTRO_NAME;
+    const previousProfile = process.env.OD_CODEX_PERMISSION_PROFILE;
+    const previousSandbox = process.env.OD_CODEX_SANDBOX;
+    try {
+      process.env.WSL_DISTRO_NAME = 'Ubuntu';
+      delete process.env.OD_CODEX_PERMISSION_PROFILE;
+      delete process.env.OD_CODEX_SANDBOX;
+
+      const args = codexAgentDef.buildArgs('prompt', [], [], {}, {
+        resumeSessionId: THREAD,
+      });
+
+      expect(args.slice(0, 8)).toEqual([
+        '--strict-config',
+        '--profile',
+        'open-design',
+        'exec',
+        'resume',
+        '--json',
+        '--skip-git-repo-check',
+        THREAD,
+      ]);
+      expect(args).not.toContain('--sandbox');
+      expect(args.some((arg) => arg.includes('sandbox_mode'))).toBe(false);
+    } finally {
+      if (previousWslDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+      else process.env.WSL_DISTRO_NAME = previousWslDistro;
+      if (previousProfile === undefined) delete process.env.OD_CODEX_PERMISSION_PROFILE;
+      else process.env.OD_CODEX_PERMISSION_PROFILE = previousProfile;
+      if (previousSandbox === undefined) delete process.env.OD_CODEX_SANDBOX;
+      else process.env.OD_CODEX_SANDBOX = previousSandbox;
+    }
+  });
+
   it('keeps model + reasoning overrides ahead of the trailing thread id on resume', () => {
     const args = codexAgentDef.buildArgs(
       'prompt',

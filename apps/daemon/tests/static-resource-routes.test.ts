@@ -162,6 +162,7 @@ describe('design system import catalog lookup', () => {
   let tempRoot: string;
   let sourceRoot: string;
   let userDesignSystemsDir: string;
+  const linkedLocalCheckouts: Array<{ designSystemId: string; sourceRoot: string }> = [];
   let maybeStartTokenContractRebuild:
     | ((designSystemId: string) => Promise<DesignSystemTokenContractRebuildJobResponse | undefined>)
     | undefined;
@@ -240,6 +241,11 @@ describe('design system import catalog lookup', () => {
             maybeStartForImportedDesignSystem: async (designSystemId) =>
               maybeStartTokenContractRebuild?.(designSystemId),
           },
+          designSystemWorkspace: {
+            linkImportedLocalCheckout: async (designSystemId: string, checkoutRoot: string) => {
+              linkedLocalCheckouts.push({ designSystemId, sourceRoot: checkoutRoot });
+            },
+          },
         });
 
         server = app.listen(0, '127.0.0.1', () => {
@@ -252,6 +258,7 @@ describe('design system import catalog lookup', () => {
 
   afterEach(() => {
     maybeStartTokenContractRebuild = undefined;
+    linkedLocalCheckouts.length = 0;
     vi.restoreAllMocks();
   });
 
@@ -280,6 +287,25 @@ describe('design system import catalog lookup', () => {
     expect(body.designSystem.id).toBe('user:demo-app');
     expect(body.designSystem.title).toBe('demo app');
     expect(fs.existsSync(path.join(userDesignSystemsDir, 'demo-app', 'DESIGN.md'))).toBe(true);
+  });
+
+  it('links a local import back to its canonical checkout for governed Git revisions', async () => {
+    const canonicalSourceRoot = fs.realpathSync.native(sourceRoot);
+    const res = await fetch(`${baseUrl}/api/design-systems/import/local`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ baseDir: sourceRoot }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { designSystem: { id: string } };
+    expect(linkedLocalCheckouts).toEqual([{
+      designSystemId: body.designSystem.id,
+      sourceRoot: canonicalSourceRoot,
+    }]);
   });
 
   it('keeps local design-system import successful when token contract auto-queue fails', async () => {

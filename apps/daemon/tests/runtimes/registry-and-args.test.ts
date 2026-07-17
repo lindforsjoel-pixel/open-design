@@ -178,33 +178,54 @@ test('codex args use workspace-write sandbox on macOS and Linux', () => {
   });
 });
 
-test('codex args use danger-full-access sandbox on WSL because workspace-write stays read-only', () => {
+test('codex args use the hardened Open Design permission profile on WSL', () => {
   withPlatform('linux', () => {
-    withEnvSnapshot(['OD_CODEX_DISABLE_PLUGINS', 'OD_CODEX_SANDBOX', 'WSL_DISTRO_NAME'], () => {
+    withEnvSnapshot([
+      'OD_CODEX_DISABLE_PLUGINS',
+      'OD_CODEX_PERMISSION_PROFILE',
+      'OD_CODEX_SANDBOX',
+      'WSL_DISTRO_NAME',
+    ], () => {
       delete process.env.OD_CODEX_DISABLE_PLUGINS;
+      delete process.env.OD_CODEX_PERMISSION_PROFILE;
       delete process.env.OD_CODEX_SANDBOX;
       process.env.WSL_DISTRO_NAME = 'Ubuntu';
-      assert.equal(codexNeedsDangerFullAccessSandbox('linux', process.env), true);
+      assert.equal(codexNeedsDangerFullAccessSandbox('linux', process.env), false);
       const args = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' });
-      assert.deepEqual(args.slice(0, 5), [
+      assert.deepEqual(args.slice(0, 6), [
+        '--strict-config',
+        '--profile',
+        'open-design',
         'exec',
         '--json',
         '--skip-git-repo-check',
-        '--sandbox',
-        'danger-full-access',
       ]);
-      assert.equal(args.some((arg) => arg.includes('default_permissions')), false);
+      assert.equal(args.includes('--sandbox'), false);
+      assert.equal(args.some((arg) => arg.includes('sandbox_mode')), false);
+      assert.equal(args.includes('danger-full-access'), false);
     });
   });
 });
 
-test('codex args allow OD_CODEX_SANDBOX danger-full-access override on Linux', () => {
+test('codex args require a second explicit opt-in for danger-full-access', () => {
   withPlatform('linux', () => {
-    withEnvSnapshot(['OD_CODEX_DISABLE_PLUGINS', 'OD_CODEX_SANDBOX', 'WSL_DISTRO_NAME'], () => {
+    withEnvSnapshot([
+      'OD_CODEX_ALLOW_DANGER_FULL_ACCESS',
+      'OD_CODEX_DISABLE_PLUGINS',
+      'OD_CODEX_SANDBOX',
+      'WSL_DISTRO_NAME',
+    ], () => {
       delete process.env.OD_CODEX_DISABLE_PLUGINS;
       process.env.OD_CODEX_SANDBOX = 'danger-full-access';
+      delete process.env.OD_CODEX_ALLOW_DANGER_FULL_ACCESS;
       delete process.env.WSL_DISTRO_NAME;
 
+      assert.throws(
+        () => codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' }),
+        /OD_CODEX_ALLOW_DANGER_FULL_ACCESS=1/,
+      );
+
+      process.env.OD_CODEX_ALLOW_DANGER_FULL_ACCESS = '1';
       assert.equal(codexNeedsDangerFullAccessSandbox('linux', process.env), true);
       const args = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' });
       assert.deepEqual(args.slice(0, 5), [
@@ -222,7 +243,7 @@ test('codex args allow OD_CODEX_SANDBOX danger-full-access override on Linux', (
   });
 });
 
-test('codex args ignore unknown OD_CODEX_SANDBOX values', () => {
+test('codex args accept an explicit workspace-write legacy override', () => {
   withPlatform('linux', () => {
     withEnvSnapshot(['OD_CODEX_DISABLE_PLUGINS', 'OD_CODEX_SANDBOX', 'WSL_DISTRO_NAME'], () => {
       delete process.env.OD_CODEX_DISABLE_PLUGINS;
@@ -242,35 +263,44 @@ test('codex args ignore unknown OD_CODEX_SANDBOX values', () => {
   });
 });
 
-test('codex args use danger-full-access sandbox on Windows because workspace-write blocks PowerShell', () => {
-  // Codex CLI's workspace-write sandbox mode on Windows lacks a working
-  // OS-level sandbox and falls back to a policy that rejects shell
-  // invocations such as powershell.exe with "blocked by policy".
-  // The agent cannot list files or run any shell-backed tool under that
-  // policy. danger-full-access is Codex CLI's documented Windows-compatible
-  // mode (issue #1721).
-  withEnvSnapshot(['OD_CODEX_DISABLE_PLUGINS', 'OD_CODEX_SANDBOX'], () => {
+test('codex args use the hardened Open Design permission profile on native Windows', () => {
+  withEnvSnapshot([
+    'OD_CODEX_DISABLE_PLUGINS',
+    'OD_CODEX_PERMISSION_PROFILE',
+    'OD_CODEX_SANDBOX',
+  ], () => {
     delete process.env.OD_CODEX_DISABLE_PLUGINS;
+    delete process.env.OD_CODEX_PERMISSION_PROFILE;
     delete process.env.OD_CODEX_SANDBOX;
 
     withPlatform('win32', () => {
       const args = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' });
 
-      assert.deepEqual(args.slice(0, 5), [
+      assert.deepEqual(args.slice(0, 6), [
+        '--strict-config',
+        '--profile',
+        'open-design',
         'exec',
         '--json',
         '--skip-git-repo-check',
-        '--sandbox',
-        'danger-full-access',
       ]);
-      // The workspace-write-scoped network override is meaningless under
-      // danger-full-access and must not appear on Windows.
-      assert.equal(args.includes('workspace-write'), false);
-      assert.equal(
-        args.includes('sandbox_workspace_write.network_access=true'),
-        false,
+      assert.equal(args.includes('--sandbox'), false);
+      assert.equal(args.some((arg) => arg.includes('sandbox_mode')), false);
+      assert.equal(args.includes('danger-full-access'), false);
+    });
+  });
+});
+
+test('codex args reject invalid permission profile names', () => {
+  withEnvSnapshot(['OD_CODEX_PERMISSION_PROFILE', 'OD_CODEX_SANDBOX'], () => {
+    process.env.OD_CODEX_PERMISSION_PROFILE = '../untrusted-profile';
+    delete process.env.OD_CODEX_SANDBOX;
+
+    withPlatform('darwin', () => {
+      assert.throws(
+        () => codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' }),
+        /Invalid OD_CODEX_PERMISSION_PROFILE/,
       );
-      assert.equal(args.some((arg) => arg.includes('default_permissions')), false);
     });
   });
 });
