@@ -729,15 +729,19 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     let designWorkflowCaptured = false;
     if (run.projectId) {
       try {
-        await designWorkflow.captureRunStart(
-          run.id,
-          run.projectId,
-          typeof meta.currentPrompt === 'string'
-            ? meta.currentPrompt
-            : typeof meta.message === 'string'
-              ? meta.message
-              : '',
-        );
+        const workflowAttachments = Array.isArray(requestBody.attachments)
+          ? requestBody.attachments.filter((item): item is string => typeof item === 'string')
+          : [];
+        if (workflowAttachments.length > 0) {
+          await designWorkflow.captureRunStart(
+            run.id,
+            run.projectId,
+            workflowPrompt,
+            workflowAttachments,
+          );
+        } else {
+          await designWorkflow.captureRunStart(run.id, run.projectId, workflowPrompt);
+        }
         designWorkflowCaptured = true;
       } catch (error) {
         designWorkflowCaptureError = error instanceof Error ? error : new Error(String(error));

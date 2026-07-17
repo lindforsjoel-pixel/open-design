@@ -817,6 +817,26 @@ describe('design workflow automatic propagation', () => {
     expect(execFileSync('git', ['ls-remote', '--heads', 'origin', 'open-design/run-run-token'], { cwd: source, encoding: 'utf8' }).trim()).not.toBe('');
     expect(queuedUpdates).toEqual([CORE_UI_PROJECT_ID]);
 
+    writeFileSync(path.join(source, 'reference.png'), 'image bytes');
+    await service.captureRunStart(
+      'run-attachment',
+      'source',
+      'Use the attached reference.',
+      ['reference.png'],
+    );
+    await service.completeRun({
+      runId: 'run-attachment',
+      projectId: 'source',
+      prompt: 'Use the attached reference.',
+      succeeded: true,
+    });
+    expect(execFileSync(
+      'git',
+      ['show', 'open-design/run-run-attachment:reference.png'],
+      { cwd: source, encoding: 'utf8' },
+    )).toBe('image bytes');
+    expect(execFileSync('git', ['status', '--short'], { cwd: source, encoding: 'utf8' })).toBe('');
+
     const preResidualBranch = execFileSync(
       'git',
       ['branch', '--show-current'],
