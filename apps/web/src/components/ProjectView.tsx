@@ -1559,24 +1559,6 @@ export function ProjectView({
   const [commentInspectorActive, setCommentInspectorActive] = useState(false);
   const commentInspectorPortalId = useId();
   const leftInspectorActive = commentInspectorActive;
-  const handleViewRunDetails = useCallback((message: ChatMessage) => {
-    // Restore the primary chat even if a comment inspector or focus mode was
-    // active, then move directly to the failure that owns this hint.
-    setCommentInspectorActive(false);
-    setWorkspaceFocused(false);
-
-    const focusFailure = () => {
-      const target = document.getElementById(`assistant-message-${message.id}`);
-      if (!target) return;
-      target.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-      target.focus({ preventScroll: true });
-    };
-    if (typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(focusFailure);
-    } else {
-      window.setTimeout(focusFailure, 0);
-    }
-  }, []);
   // Per-session override for the BYOK chat's generate_image tool. Seeded once
   // from the New Project → Media model pick (project.metadata.imageModel) — but
   // only when that pick belongs to the active BYOK provider (see
@@ -9009,7 +8991,6 @@ export function ProjectView({
           messages={messages}
           artifactHtml={artifact?.html}
           conversationError={error}
-          onViewRunDetails={handleViewRunDetails}
           onAuthorizeAndRetry={handleSwitchToAmrAndRetry}
           onLaunchTerminalAuth={handleLaunchAntigravityOauth}
           conversationId={activeConversationId}
