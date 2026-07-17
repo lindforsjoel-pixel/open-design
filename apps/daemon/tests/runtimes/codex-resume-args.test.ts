@@ -88,6 +88,23 @@ describe('codex buildArgs session resume', () => {
     expect(args[args.indexOf('--add-dir') + 1]).toBe('/extra/writable/dir');
   });
 
+  it('passes native image attachments on create and resume turns', () => {
+    const images = ['/tmp/od-uploads/first.png', '/tmp/od-uploads/second.png'];
+    const createArgs = codexAgentDef.buildArgs('prompt', images, [], {}, {
+      resumeSessionId: null,
+    });
+    const resumeArgs = codexAgentDef.buildArgs('prompt', images, [], {}, {
+      resumeSessionId: THREAD,
+    });
+
+    for (const args of [createArgs, resumeArgs]) {
+      expect(args.filter((arg) => arg === '--image')).toHaveLength(2);
+      expect(args).toContain(images[0]);
+      expect(args).toContain(images[1]);
+    }
+    expect(resumeArgs.indexOf(images[1]!)).toBeLessThan(resumeArgs.indexOf(THREAD));
+  });
+
   it('uses plain `exec` when no session context is supplied (back-compat)', () => {
     const args = codexAgentDef.buildArgs('prompt', [], [], {}, {});
     expect(args[0]).toBe('exec');
@@ -97,5 +114,6 @@ describe('codex buildArgs session resume', () => {
   it('declares CLI-managed, capture-style session resume', () => {
     expect(codexAgentDef.resumesSessionViaCli).toBe(true);
     expect(codexAgentDef.capturesSessionIdFromStream).toBe(true);
+    expect(codexAgentDef.supportsImagePaths).toBe(true);
   });
 });

@@ -105,7 +105,7 @@ export const codexAgentDef = {
     // is sufficient for stdin delivery.
     buildArgs: (
       _prompt,
-      _imagePaths,
+      imagePaths,
       extraAllowedDirs = [],
       options = {},
       runtimeContext = {},
@@ -157,6 +157,10 @@ export const codexAgentDef = {
       if (process.env.OD_CODEX_DISABLE_PLUGINS === '1') {
         args.push('--disable', 'plugins');
       }
+      for (const imagePath of imagePaths || []) {
+        if (typeof imagePath !== 'string' || imagePath.length === 0) continue;
+        args.push('--image', imagePath);
+      }
       // `-C <cwd>` and `--add-dir <dir>` are CREATE-only flags: `codex exec
       // resume` rejects both (`error: unexpected argument '-C' found`), so
       // appending them on a resume turn would make the follow-up turn die
@@ -195,6 +199,7 @@ export const codexAgentDef = {
       return args;
     },
     promptViaStdin: true,
+    supportsImagePaths: true,
     // Codex's CLI carries its own session across spawns: on a follow-up turn
     // the daemon resumes the captured thread id instead of re-sending the
     // flattened transcript, so the first upstream call reuses the warm prefix
