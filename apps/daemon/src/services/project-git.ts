@@ -820,19 +820,38 @@ export async function createAndPushProjectGitRevision(
 export async function prepareProjectGitRevisionBase(
   projectRoot: string,
   baseBranchInput: unknown = 'main',
+  allowedUntrackedPathsInput: readonly string[] = [],
 ): Promise<ProjectGitStatusResponse> {
   const baseBranch = validateBranchName(baseBranchInput);
+  const allowedUntrackedPaths = new Set(
+    allowedUntrackedPathsInput
+      .map((filePath) => filePath.replace(/\\/g, '/').replace(/^\.\//, ''))
+      .filter((filePath) => (
+        filePath.length > 0
+        && filePath !== '.'
+        && !path.posix.isAbsolute(filePath)
+        && !filePath.split('/').includes('..')
+      )),
+  );
+  const assertOnlyAllowedUntrackedChanges = (status: ProjectGitStatusResponse): void => {
+    if (status.clean) return;
+    const unexpected = status.truncated || status.changes.some((change) => (
+      change.kind !== 'untracked'
+      || !allowedUntrackedPaths.has(change.path.replace(/\\/g, '/'))
+    ));
+    if (unexpected) {
+      throw new ProjectGitError(
+        'The design-system worktree has uncommitted changes from an earlier run. Recover or commit them before starting another revision.',
+        'GIT_COMMAND_FAILED',
+      );
+    }
+  };
   const before = await readProjectGitStatus(projectRoot);
   if (!before.available) throw new ProjectGitError(before.error ?? 'Git is unavailable.', 'GIT_NOT_AVAILABLE');
   if (!before.repository || !before.repositoryRoot) {
     throw new ProjectGitError('Project is not a Git repository.', 'NOT_GIT_REPOSITORY');
   }
-  if (!before.clean) {
-    throw new ProjectGitError(
-      'The design-system worktree has uncommitted changes from an earlier run. Recover or commit them before starting another revision.',
-      'GIT_COMMAND_FAILED',
-    );
-  }
+  assertOnlyAllowedUntrackedChanges(before);
   const remote = await runGit(before.repositoryRoot, ['remote', 'get-url', 'origin']);
   if (!remote.ok || !remote.stdout.trim()) {
     throw new ProjectGitError('The project needs an origin remote before Open Design can prepare revisions.', 'GIT_COMMAND_FAILED');
@@ -845,7 +864,11 @@ export async function prepareProjectGitRevisionBase(
     throw new ProjectGitError(fetched.stderr.trim() || `Unable to fetch origin/${baseBranch}.`, 'GIT_COMMAND_FAILED');
   }
   const remoteIsAncestor = await runGit(before.repositoryRoot, ['merge-base', '--is-ancestor', remoteRef, 'HEAD']);
-  if (remoteIsAncestor.ok) return readProjectGitStatus(projectRoot);
+  if (remoteIsAncestor.ok) {
+    const current = await readProjectGitStatus(projectRoot);
+    assertOnlyAllowedUntrackedChanges(current);
+    return current;
+  }
   const headIsAncestor = await runGit(before.repositoryRoot, ['merge-base', '--is-ancestor', 'HEAD', remoteRef]);
   if (!headIsAncestor.ok) {
     throw new ProjectGitError(
@@ -866,7 +889,9 @@ export async function prepareProjectGitRevisionBase(
       'GIT_COMMAND_FAILED',
     );
   }
-  return readProjectGitStatus(projectRoot);
+  const after = await readProjectGitStatus(projectRoot);
+  assertOnlyAllowedUntrackedChanges(after);
+  return after;
 }
 
 export async function readProjectGitFileAtRevision(

@@ -1571,7 +1571,12 @@ export interface DesignWorkflowService {
   rollback(projectId: string, sha: string): Promise<DesignWorkflowStatusResponse>;
   resume(projectId: string): Promise<DesignWorkflowStatusResponse>;
   markApplied(projectId: string, expectedTargetSha: string): Promise<DesignWorkflowStatusResponse>;
-  captureRunStart(runId: string, projectId: string, prompt?: string): Promise<void>;
+  captureRunStart(
+    runId: string,
+    projectId: string,
+    prompt?: string,
+    attachmentPaths?: readonly string[],
+  ): Promise<void>;
   completeRun(input: { runId: string; projectId: string; prompt: string; succeeded: boolean }): Promise<void>;
   promptContext(projectId: string, prompt: string, runId?: string): Promise<string>;
   readAppliedFile(
@@ -2784,7 +2789,12 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
     return withProjectLock(projectId, () => publishUnlocked(projectId));
   }
 
-  async function captureRunStart(runId: string, projectId: string, prompt = ''): Promise<void> {
+  async function captureRunStart(
+    runId: string,
+    projectId: string,
+    prompt = '',
+    attachmentPaths: readonly string[] = [],
+  ): Promise<void> {
     if (capturedRunLocks.has(runId)) throw new Error('This run already holds a project workflow lock.');
     const initialProject = getProject(db, projectId);
     if (!isUserDesignWorkflowProject(initialProject)) return;
@@ -2831,7 +2841,7 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
         const project = await ensureSourceWorktree(foundProject);
         const root = rootFor(project);
         await recoverStaleSourceRunCapture(project, root);
-        const git = await prepareProjectGitRevisionBase(root);
+        const git = await prepareProjectGitRevisionBase(root, 'main', attachmentPaths);
         if (!git.repository) {
           capturedRunLocks.set(runId, release);
           capturedRunProjects.set(runId, projectId);
@@ -2842,13 +2852,30 @@ export function createDesignWorkflowService(deps: DesignWorkflowServiceDeps): De
         }
         if (!git.lastCommit) throw new Error('The design-system worktree must have a committed base revision.');
         if (!git.branch) throw new Error('The managed design-system worktree must be on a branch.');
+        const normalizedAttachmentPaths = new Set(
+          attachmentPaths.map((filePath) => filePath.replace(/\\/g, '/').replace(/^\.\//, '')),
+        );
+        const currentRunAttachments = new Set(
+          git.changes
+            .filter((change) => (
+              change.kind === 'untracked'
+              && normalizedAttachmentPaths.has(change.path.replace(/\\/g, '/'))
+            ))
+            .map((change) => change.path),
+        );
+        const before = snapshotDesignWorkflowFiles(root);
+        for (const attachmentPath of currentRunAttachments) before.delete(attachmentPath);
         const captured: CapturedWorkflowRun = {
           projectId,
           root,
           baseSha: git.lastCommit.hash,
           baseBranch: git.branch,
-          before: snapshotDesignWorkflowFiles(root),
-          dirtyBefore: new Set(git.changes.flatMap((change) => [change.path, change.originalPath].filter((item): item is string => Boolean(item)))),
+          before,
+          dirtyBefore: new Set(git.changes.flatMap((change) => (
+            currentRunAttachments.has(change.path)
+              ? []
+              : [change.path, change.originalPath].filter((item): item is string => Boolean(item))
+          ))),
         };
         saveSourceRunCapture(db, {
           runId,

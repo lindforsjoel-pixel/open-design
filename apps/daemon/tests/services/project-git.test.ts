@@ -241,6 +241,32 @@ describe('project Git service', () => {
     await expect(prepareProjectGitRevisionBase(repo)).rejects.toThrow(/uncommitted changes from an earlier run/i);
   });
 
+  it('allows only exact current-run attachment uploads as an untracked revision base', async () => {
+    const remote = mkdtempSync(path.join(tmpdir(), 'od-project-attachment-remote-'));
+    tempDirs.push(remote);
+    runGit(remote, ['init', '--bare']);
+    const repo = makeRepo();
+    await writeFile(path.join(repo, 'DESIGN.md'), '# One\n');
+    runGit(repo, ['add', '-A']);
+    runGit(repo, ['commit', '-m', 'initial']);
+    runGit(repo, ['branch', '-M', 'main']);
+    runGit(repo, ['remote', 'add', 'origin', remote]);
+    runGit(repo, ['push', '-u', 'origin', 'main']);
+    await writeFile(path.join(repo, 'reference.png'), 'image bytes');
+
+    const status = await prepareProjectGitRevisionBase(repo, 'main', ['reference.png']);
+
+    expect(status.clean).toBe(false);
+    expect(status.changes).toEqual([
+      expect.objectContaining({ path: 'reference.png', kind: 'untracked' }),
+    ]);
+
+    await writeFile(path.join(repo, 'unexpected.txt'), 'not this run');
+    await expect(
+      prepareProjectGitRevisionBase(repo, 'main', ['reference.png']),
+    ).rejects.toThrow(/uncommitted changes from an earlier run/i);
+  });
+
   it('quarantines failed-run commits and file state before restoring the exact clean base', async () => {
     const remote = mkdtempSync(path.join(tmpdir(), 'od-project-recovery-remote-'));
     tempDirs.push(remote);

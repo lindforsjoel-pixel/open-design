@@ -269,6 +269,7 @@ describe('run-route design workflow lifecycle', () => {
         conversationId: 'workflow-conversation',
         agentId: 'codex',
         message: '/push',
+        attachments: ['reference.png'],
       }),
     });
 
@@ -278,6 +279,7 @@ describe('run-route design workflow lifecycle', () => {
       'run-1',
       'workflow-project',
       '/push',
+      ['reference.png'],
     );
     const captureIndex = harness.events.indexOf('capture');
     const firstWaitIndex = harness.events.indexOf('wait');
