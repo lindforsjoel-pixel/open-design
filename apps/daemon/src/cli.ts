@@ -63,6 +63,7 @@ const MEDIA_GENERATE_STRING_FLAGS = new Set([
   'surface',
   'model',
   'prompt',
+  'prompt-file',
   'output',
   'aspect',
   'length',
@@ -218,6 +219,14 @@ const TEMPLATES_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'description',
 ]);
 const TEMPLATES_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+// `od deploy …` posts to /api/projects/:id/deploy. The CLI form is the
+// embeddability contract: external agents can deploy a project file to
+// Vercel or Cloudflare Pages without going through the web UI.
+const DEPLOY_STRING_FLAGS = new Set([
+  'daemon-url', 'file', 'provider', 'target',
+  'cf-zone-id', 'cf-zone-name', 'cf-domain-prefix',
+]);
+const DEPLOY_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -333,6 +342,7 @@ const SUBCOMMAND_MAP = {
   templates: runTemplates,
   conversation: runConversation,
   chat: runChat,
+  deploy: runDeploy,
   daemon: runDaemon,
   atoms: runAtoms,
   skills: runSkills,
@@ -901,10 +911,16 @@ async function runMediaGenerate(rawArgs) {
     process.exit(2);
   }
 
+  // Long-form media prompts (detailed image/video descriptions, program-
+  // generated prompts) arrive via --prompt-file <path|-> (stdin) per the CLI
+  // contract; readPromptFromFlags prefers an inline --prompt and otherwise reads
+  // the file/stdin, matching od run / od brand / od automation.
+  const prompt = await readPromptFromFlags(flags);
+
   const body = {
     surface,
     model: flags.model,
-    prompt: flags.prompt,
+    prompt,
     output: flags.output,
     aspect: flags.aspect,
     voice: flags.voice,
@@ -1195,6 +1211,7 @@ Required:
 
 Common options:
   --prompt "<text>"         Generation prompt. ElevenLabs SFX prompts must stay under 450 characters.
+  --prompt-file <path|->     Read the prompt from a file, or - for stdin (for long-form prompts).
   --output <filename>       File to write under the project. Auto-named if omitted.
   --aspect 1:1|16:9|9:16|4:3|3:4
   --length <seconds>        Video length.
@@ -10170,4 +10187,91 @@ async function runAutomation(args) {
       printAutomationHelp();
       process.exit(2);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: od deploy
+// ---------------------------------------------------------------------------
+
+async function runDeploy(args) {
+  let flags;
+  try {
+    flags = parseFlags(args, { string: DEPLOY_STRING_FLAGS, boolean: DEPLOY_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  if (flags.help || flags.h) {
+    console.log(`Usage: od deploy <projectId> --file <fileName> [options]
+
+Required:
+  <projectId>              Project id to deploy.
+  --file <fileName>        File name within the project to deploy.
+
+Options:
+  --provider vercel-self|cloudflare-pages   Deploy provider (default: vercel-self).
+  --target preview|production               Deployment target (default: server decides).
+  --cf-zone-id <id>                         Cloudflare Pages: zone id.
+  --cf-zone-name <name>                     Cloudflare Pages: zone name.
+  --cf-domain-prefix <prefix>               Cloudflare Pages: domain prefix.
+  --json                                    Emit raw JSON response.
+  --daemon-url <url>                        Open Design daemon HTTP base.`);
+    return;
+  }
+
+  // Extract positional projectId (first non-flag argument)
+  const positionals = positionalArgs(args, DEPLOY_STRING_FLAGS);
+  const projectId = positionals[0] ?? '';
+  if (!projectId) {
+    console.error('projectId is required: od deploy <projectId> --file <fileName>');
+    process.exit(2);
+  }
+
+  const fileName = typeof flags.file === 'string' ? flags.file.trim() : '';
+  if (!fileName) {
+    console.error('--file <fileName> is required');
+    process.exit(2);
+  }
+
+  // Validate --target locally before making any HTTP request
+  const targetRaw = flags.target;
+  if (targetRaw !== undefined && targetRaw !== 'preview' && targetRaw !== 'production') {
+    console.error(`invalid --target value: "${targetRaw}" (must be "preview" or "production")`);
+    process.exit(2);
+  }
+
+  const providerId = typeof flags.provider === 'string' ? flags.provider : 'vercel-self';
+
+  const body: Record<string, unknown> = { fileName, providerId };
+
+  // Only include target when explicitly supplied
+  if (targetRaw !== undefined) {
+    body.target = targetRaw;
+  }
+
+  // Include cloudflarePages object only when at least one CF flag is present
+  const zoneId = typeof flags['cf-zone-id'] === 'string' ? flags['cf-zone-id'] : undefined;
+  const zoneName = typeof flags['cf-zone-name'] === 'string' ? flags['cf-zone-name'] : undefined;
+  const domainPrefix = typeof flags['cf-domain-prefix'] === 'string' ? flags['cf-domain-prefix'] : undefined;
+  if (zoneId !== undefined || zoneName !== undefined || domainPrefix !== undefined) {
+    body.cloudflarePages = { zoneId, zoneName, domainPrefix };
+  }
+
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/deploy`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) return process.stdout.write(JSON.stringify(data) + '\n');
+  const url = data?.url ?? data?.deploymentUrl ?? '';
+  console.log(`[deploy] ${data?.id ?? 'done'}${url ? ` → ${url}` : ''}`);
 }
