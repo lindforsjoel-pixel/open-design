@@ -17,9 +17,19 @@ The daemon injects these environment variables for agent sessions:
 - \`OD_PROJECT_DIR\` - active project files directory.
 - \`OD_DAEMON_URL\` - base URL of the local daemon.
 
+Validate the dispatcher paths without printing their values or any credentials.
+If preflight fails, ask the user to relaunch from the Open Design app.
+
 Run media generation through the dispatcher:
 
 \`\`\`bash
+if [ -z "\${OD_NODE_BIN:-}" ]; then printf '%s\\n' 'Open Design media preflight: OD_NODE_BIN is unset; relaunch the agent from Open Design.' >&2; exit 64; fi
+case "$OD_NODE_BIN" in /*) ;; *) printf '%s\\n' 'Open Design media preflight: OD_NODE_BIN must be an absolute path.' >&2; exit 64 ;; esac
+if [ ! -r "$OD_NODE_BIN" ] || [ ! -x "$OD_NODE_BIN" ]; then printf '%s\\n' 'Open Design media preflight: OD_NODE_BIN is not a readable executable.' >&2; exit 126; fi
+if [ -z "\${OD_BIN:-}" ]; then printf '%s\\n' 'Open Design media preflight: OD_BIN is unset; relaunch the agent from Open Design.' >&2; exit 64; fi
+case "$OD_BIN" in /*) ;; *) printf '%s\\n' 'Open Design media preflight: OD_BIN must be an absolute path.' >&2; exit 64 ;; esac
+if [ ! -r "$OD_BIN" ]; then printf '%s\\n' 'Open Design media preflight: OD_BIN is not readable.' >&2; exit 66; fi
+
 "$OD_NODE_BIN" "$OD_BIN" media generate \\
   --project "$OD_PROJECT_ID" \\
   --surface <image|video|audio> \\

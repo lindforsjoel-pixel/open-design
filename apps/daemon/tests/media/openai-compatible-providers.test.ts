@@ -142,6 +142,10 @@ let stdin = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { stdin += chunk; });
 process.stdin.on('end', () => {
+  if (process.env.OD_CODEX_IMAGEGEN !== '1') {
+    process.stderr.write('missing native imagegen subprocess marker');
+    process.exit(12);
+  }
   if (expectedConfigIncludes || expectedConfigExcludes) {
     const config = readFileSync(path.join(process.env.CODEX_HOME || '', 'config.toml'), 'utf8');
     if (expectedConfigIncludes && !config.includes(expectedConfigIncludes)) {

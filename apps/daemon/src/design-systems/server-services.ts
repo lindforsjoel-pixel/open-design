@@ -78,6 +78,7 @@ export function createDesignSystemServerServices({
     readDesignSystem: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<string | null | undefined>;
     readDesignSystemPackageInfo: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<unknown>;
     readDesignSystemStaticFile: (root: string, id: string, filePath: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<DesignSystemStaticFile | null | undefined>;
+    readDesignSystemStaticFileFromDirectory: (root: string, filePath: string, manifestId?: string) => Promise<DesignSystemStaticFile | null | undefined>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<Array<{ kind?: string; path: string }> | null | undefined>;
     readUserDesignSystemFile: (root: string, id: string, filePath: string) => Promise<{ path: string; content: string } | null | undefined>;
     linkUserDesignSystemProject: (root: string, id: string, projectId: string) => Promise<unknown>;
@@ -158,13 +159,38 @@ export function createDesignSystemServerServices({
     );
   }
 
-  async function readAvailableDesignSystemStaticFile(id: string, filePath: string) {
-    if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath, { idPrefix: 'user:' });
-    }
-    return (
-      (await designSystems.readDesignSystemStaticFile(paths.DESIGN_SYSTEMS_DIR, id, filePath))
-      ?? (await designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath))
+  async function readAvailableDesignSystemStaticFile(
+    dbHandle: Database.Database,
+    id: string,
+    filePath: string,
+  ) {
+    const registryFile = typeof id === 'string' && id.startsWith('user:')
+      ? await designSystems.readDesignSystemStaticFile(
+          paths.USER_DESIGN_SYSTEMS_DIR,
+          id,
+          filePath,
+          { idPrefix: 'user:' },
+        )
+      : (
+          (await designSystems.readDesignSystemStaticFile(paths.DESIGN_SYSTEMS_DIR, id, filePath))
+          ?? (await designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath))
+        );
+    if (registryFile || !id.startsWith('user:')) return registryFile;
+
+    const systems = await listAllDesignSystems();
+    const summary = systems.find((system) => system.id === id && system.source === 'user');
+    if (!summary?.projectId || !projects.isSafeId(summary.projectId)) return null;
+    const project = projects.getProject(dbHandle, summary.projectId);
+    if (!project) return null;
+    const projectDir = projects.resolveProjectDir(
+      paths.PROJECTS_DIR,
+      project.id,
+      project.metadata,
+    );
+    return designSystems.readDesignSystemStaticFileFromDirectory(
+      projectDir,
+      filePath,
+      id.slice('user:'.length),
     );
   }
 

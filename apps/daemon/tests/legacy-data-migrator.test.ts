@@ -55,6 +55,26 @@ function seedLegacyDir(legacyDir: string): void {
   writeFile(path.join(legacyDir, 'media-config.json'), '{"providers":{}}');
   writeFile(path.join(legacyDir, 'projects', 'p1', 'index.html'), '<html>1</html>');
   writeFile(path.join(legacyDir, 'projects', 'p2', 'page.html'), '<html>2</html>');
+  writeFile(
+    path.join(legacyDir, 'design-systems', 'persisted-system', 'DESIGN.md'),
+    '# Persisted System',
+  );
+  writeFile(
+    path.join(legacyDir, 'design-systems', 'persisted-system', 'metadata.json'),
+    JSON.stringify({
+      title: 'Persisted System',
+      status: 'published',
+      projectId: 'design-system-project-1',
+    }),
+  );
+  writeFile(
+    path.join(legacyDir, 'design-systems', 'persisted-system', 'system', 'kit.html'),
+    '<html>light kit</html>',
+  );
+  writeFile(
+    path.join(legacyDir, 'design-systems', 'persisted-system', 'system', 'kit.dark.html'),
+    '<html>dark kit</html>',
+  );
   writeFile(path.join(legacyDir, 'artifacts', 'a1', 'final.html'), '<html>a</html>');
 }
 
@@ -174,6 +194,7 @@ describe('migrateLegacyDataDirSync', () => {
         'app-config.json',
         'media-config.json',
         'projects',
+        'design-systems',
         'artifacts',
       ]),
     );
@@ -184,6 +205,26 @@ describe('migrateLegacyDataDirSync', () => {
     expect(
       fs.readFileSync(path.join(dataDir, 'artifacts', 'a1', 'final.html'), 'utf8'),
     ).toBe('<html>a</html>');
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(dataDir, 'design-systems', 'persisted-system', 'metadata.json'),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({ status: 'published', projectId: 'design-system-project-1' });
+    expect(
+      fs.readFileSync(
+        path.join(dataDir, 'design-systems', 'persisted-system', 'system', 'kit.html'),
+        'utf8',
+      ),
+    ).toContain('light kit');
+    expect(
+      fs.readFileSync(
+        path.join(dataDir, 'design-systems', 'persisted-system', 'system', 'kit.dark.html'),
+        'utf8',
+      ),
+    ).toContain('dark kit');
     expect(log.entries.some((e) => e.message.includes('migrating legacy data'))).toBe(true);
     expect(log.entries.some((e) => e.message.includes('migration complete'))).toBe(true);
   });

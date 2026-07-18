@@ -1091,7 +1091,7 @@ async function runCodexImagegen(
   const codexBin = env.CODEX_BIN?.trim() || 'codex';
   const child = spawn(codexBin, codexImagegenArgs(ctx, generatedRoot, env), {
     cwd: ctx.projectRoot,
-    env,
+    env: { ...env, OD_CODEX_IMAGEGEN: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const stdout: Buffer[] = [];

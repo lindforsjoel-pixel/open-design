@@ -563,11 +563,19 @@ export async function readDesignSystemStaticFile(
   options: { idPrefix?: string } = {},
 ): Promise<DesignSystemStaticFileDetail | null> {
   const dirId = stripPrefixAndValidateId(id, options.idPrefix);
-  const cleanPath = sanitizeRelativeFilePath(relativePath);
-  if (!dirId || !cleanPath) return null;
+  if (!dirId) return null;
+  return readDesignSystemStaticFileFromDirectory(path.join(root, dirId), relativePath, dirId);
+}
 
-  const brandRoot = path.join(root, dirId);
-  const manifest = await readProjectManifest(brandRoot, dirId);
+export async function readDesignSystemStaticFileFromDirectory(
+  brandRoot: string,
+  relativePath: string,
+  manifestId: string = path.basename(brandRoot),
+): Promise<DesignSystemStaticFileDetail | null> {
+  const cleanPath = sanitizeRelativeFilePath(relativePath);
+  if (!cleanPath) return null;
+
+  const manifest = await readProjectManifest(brandRoot, manifestId);
   if (!(await isAllowedDesignSystemStaticFile(brandRoot, manifest, cleanPath))) return null;
 
   const resolvedRoot = path.resolve(brandRoot);
@@ -912,7 +920,9 @@ const DESIGN_SYSTEM_STATIC_SYSTEM_FILES = new Set([
   'system/index.html',
   'system/kit.html',
   'system/kit.dark.html',
+  'system/kit.css',
   'system/tokens.default.json',
+  'system/tokens.dark.json',
   'system/artifacts/landing.html',
   'system/artifacts/deck.html',
   'system/artifacts/poster.html',

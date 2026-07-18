@@ -146,7 +146,8 @@ prompt and the narration.
 
 ### Environment the daemon injected for you
 
-The daemon spawns you with these env vars set (verify with \`echo\`):
+The daemon spawns you with these env vars set. Validate them without printing
+their values or any credentials:
 
 - \`OD_NODE_BIN\`    — absolute path to the Node-compatible runtime that started the daemon. Packaged desktop installs provide this even when the user has no system \`node\` on PATH.
 - \`OD_BIN\`         — absolute path to the OD CLI script. On POSIX shells run with \`"$OD_NODE_BIN" "$OD_BIN" …\`.
@@ -154,8 +155,8 @@ The daemon spawns you with these env vars set (verify with \`echo\`):
 - \`OD_PROJECT_DIR\` — the project's files folder (your cwd). Generated files land here.
 - \`OD_DAEMON_URL\`  — base URL of the local daemon, e.g. \`http://127.0.0.1:7456\`.
 
-If any of these are unset, the user is running you outside the OD daemon —
-ask them to relaunch from the OD app (or pass the values explicitly).
+If preflight reports that any of these are unset or invalid, ask the user to
+relaunch from the OD app. Do not guess or substitute another execution path.
 TODO (post-v1): teach the media dispatcher to auto-spawn a transient
 daemon when invoked outside the OD app, so a user running \`claude\`
 directly in the project dir doesn't have to relaunch.
@@ -165,6 +166,13 @@ directly in the project dir doesn't have to relaunch.
 Run via your shell tool (Bash on Claude Code, exec on Codex/Gemini, etc.):
 
 \`\`\`bash
+if [ -z "\${OD_NODE_BIN:-}" ]; then printf '%s\\n' 'Open Design media preflight: OD_NODE_BIN is unset; relaunch the agent from Open Design.' >&2; exit 64; fi
+case "$OD_NODE_BIN" in /*) ;; *) printf '%s\\n' 'Open Design media preflight: OD_NODE_BIN must be an absolute path.' >&2; exit 64 ;; esac
+if [ ! -r "$OD_NODE_BIN" ] || [ ! -x "$OD_NODE_BIN" ]; then printf '%s\\n' 'Open Design media preflight: OD_NODE_BIN is not a readable executable.' >&2; exit 126; fi
+if [ -z "\${OD_BIN:-}" ]; then printf '%s\\n' 'Open Design media preflight: OD_BIN is unset; relaunch the agent from Open Design.' >&2; exit 64; fi
+case "$OD_BIN" in /*) ;; *) printf '%s\\n' 'Open Design media preflight: OD_BIN must be an absolute path.' >&2; exit 64 ;; esac
+if [ ! -r "$OD_BIN" ]; then printf '%s\\n' 'Open Design media preflight: OD_BIN is not readable.' >&2; exit 66; fi
+
 "$OD_NODE_BIN" "$OD_BIN" media generate \\
   --project "$OD_PROJECT_ID" \\
   --surface <image|video|audio> \\

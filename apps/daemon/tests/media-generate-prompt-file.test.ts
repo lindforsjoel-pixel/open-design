@@ -15,14 +15,15 @@
 
 import { spawn } from 'node:child_process';
 import http from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const daemonRoot = fileURLToPath(new URL('..', import.meta.url));
 const cliEntry = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+const tsxImport = import.meta.resolve('tsx');
 
 let server: http.Server | undefined;
 let baseUrl = '';
@@ -55,7 +56,7 @@ beforeEach(async () => {
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', () => resolve()));
   const addr = server.address() as { port: number };
   baseUrl = `http://127.0.0.1:${addr.port}`;
-  tmp = await mkdtemp(path.join(os.tmpdir(), 'od-media-pf-'));
+  tmp = await mkdtemp(path.join(os.tmpdir(), 'od media prompt file-'));
 });
 
 afterEach(async () => {
@@ -89,6 +90,64 @@ async function runCli(args: string[], input?: string): Promise<void> {
   // result handling — fails the spec instead of passing on the recorded request
   // alone.
   expect(code, `od media generate exited ${code}; stderr:\n${stderr}`).toBe(0);
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+async function runPackagedMacCli(args: string[]): Promise<void> {
+  const appRoot = path.join(tmp, 'Open Design.app');
+  const nodeBin = path.join(
+    appRoot,
+    'Contents',
+    'Frameworks',
+    'Open Design Helper.app',
+    'Contents',
+    'MacOS',
+    'Open Design Helper',
+  );
+  const cliBin = path.join(
+    appRoot,
+    'Contents',
+    'Resources',
+    'app',
+    'prebundled',
+    'daemon',
+    'daemon-cli.mjs',
+  );
+  const workspace = path.join(tmp, 'Application Support', 'Open Design', 'projects', 'project one');
+  await mkdir(path.dirname(nodeBin), { recursive: true });
+  await mkdir(path.dirname(cliBin), { recursive: true });
+  await mkdir(workspace, { recursive: true });
+  await writeFile(
+    nodeBin,
+    `#!/bin/sh\nexec ${quotePosix(process.execPath)} --import ${quotePosix(tsxImport)} "$@"\n`,
+    'utf8',
+  );
+  await chmod(nodeBin, 0o700);
+  await writeFile(cliBin, `import ${JSON.stringify(pathToFileURL(cliEntry).href)};\n`, 'utf8');
+
+  const command = ['"$OD_NODE_BIN"', '"$OD_BIN"', ...args.map(quotePosix)].join(' ');
+  const { code, stderr } = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+    const child = spawn('/bin/zsh', ['-c', command], {
+      cwd: workspace,
+      env: {
+        ...process.env,
+        OD_NODE_BIN: nodeBin,
+        OD_BIN: cliBin,
+        OD_PROJECT_ID: 'p1',
+        OD_PROJECT_DIR: workspace,
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    child.on('error', reject);
+    child.on('close', (exitCode) => resolve({ code: exitCode ?? -1, stderr }));
+  });
+  expect(code, `packaged media generate exited ${code}; stderr:\n${stderr}`).toBe(0);
 }
 
 describe('od media generate --prompt-file', () => {
@@ -126,4 +185,33 @@ describe('od media generate --prompt-file', () => {
     expect(gen, 'media/generate was called').toBeTruthy();
     expect(JSON.parse(gen!.body).prompt).toBe(LONG_PROMPT);
   });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'quotes packaged macOS runtime paths and completes the media generate to media wait flow',
+    async () => {
+      await runPackagedMacCli([
+        'media',
+        'generate',
+        '--project',
+        'p1',
+        '--surface',
+        'image',
+        '--model',
+        'test-model',
+        '--output',
+        'out.png',
+        '--prompt',
+        'Packaged macOS path smoke test',
+        '--aspect',
+        '3:4',
+        '--daemon-url',
+        baseUrl,
+      ]);
+
+      expect(seen.map((request) => request.url)).toEqual([
+        '/api/projects/p1/media/generate',
+        '/api/media/tasks/task-1/wait',
+      ]);
+    },
+  );
 });

@@ -99,6 +99,7 @@ const PAYLOAD_ENTRIES: readonly string[] = [
   'app-config.json',
   'media-config.json',
   'projects',
+  'design-systems',
   'artifacts',
   'connectors',
   'composio',

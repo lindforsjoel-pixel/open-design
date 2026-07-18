@@ -213,6 +213,89 @@ describe('project design-system copy route', () => {
     expect(copiedTabs.active).toBe('index.html');
   }, 60_000);
 
+  it('keeps a persisted project-backed design system discoverable after a workspace reload', async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'od-persisted-design-system-'));
+    started = await startIsolatedServer(dataDir);
+
+    const createdResponse = await fetch(`${started.url}/api/design-systems`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Persisted Project Design System',
+        summary: 'Must survive upgrades and workspace reloads.',
+        status: 'published',
+      }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as {
+      designSystem: { id: string; status: string };
+    };
+
+    const workspaceResponse = await fetch(
+      `${started.url}/api/design-systems/${encodeURIComponent(created.designSystem.id)}/workspace`,
+      { method: 'POST' },
+    );
+    expect(workspaceResponse.status).toBe(201);
+    const workspace = await workspaceResponse.json() as { project: { id: string } };
+
+    await postJson(`${started.url}/api/projects/${workspace.project.id}/files`, {
+      name: 'system/kit.html',
+      content: '<!doctype html><title>Persisted light kit</title>',
+    });
+    await postJson(`${started.url}/api/projects/${workspace.project.id}/files`, {
+      name: 'system/kit.dark.html',
+      content: '<!doctype html><title>Persisted dark kit</title>',
+    });
+    await postJson(`${started.url}/api/projects/${workspace.project.id}/files`, {
+      name: 'system/tokens.dark.json',
+      content: '{"theme":"dark"}',
+    });
+
+    const registrySystemDir = join(
+      dataDir,
+      'design-systems',
+      created.designSystem.id.slice('user:'.length),
+      'system',
+    );
+    await rm(registrySystemDir, { recursive: true, force: true });
+
+    await stopServer();
+    started = await startIsolatedServer(dataDir);
+
+    const systems = await fetchJson<{
+      designSystems: Array<{ id: string; status: string; projectId?: string }>;
+    }>(`${started.url}/api/design-systems`);
+    expect(systems.designSystems).toContainEqual(expect.objectContaining({
+      id: created.designSystem.id,
+      status: 'published',
+      projectId: workspace.project.id,
+    }));
+
+    const lightKit = await fetchText(
+      `${started.url}/api/design-systems/${encodeURIComponent(created.designSystem.id)}/showcase`,
+    );
+    expect(lightKit).toContain('Persisted light kit');
+    const darkKit = await fetchText(
+      `${started.url}/api/design-systems/${encodeURIComponent(created.designSystem.id)}/static?path=${encodeURIComponent('system/kit.dark.html')}`,
+    );
+    expect(darkKit).toContain('Persisted dark kit');
+    const darkTokens = await fetchText(
+      `${started.url}/api/design-systems/${encodeURIComponent(created.designSystem.id)}/static?path=${encodeURIComponent('system/tokens.dark.json')}`,
+    );
+    expect(darkTokens).toContain('"theme":"dark"');
+
+    const consumerProjectId = `persisted-ds-consumer-${Date.now()}`;
+    const consumer = await postJson<{ project: { designSystemId: string } }>(
+      `${started.url}/api/projects`,
+      {
+        id: consumerProjectId,
+        name: 'Persisted Design System Consumer',
+        designSystemId: created.designSystem.id,
+      },
+    );
+    expect(consumer.project.designSystemId).toBe(created.designSystem.id);
+  }, 60_000);
+
   it('rejects generic duplication for design-system-like projects', async () => {
     dataDir = await mkdtemp(join(tmpdir(), 'od-project-copy-brand-'));
     started = await startIsolatedServer(dataDir);

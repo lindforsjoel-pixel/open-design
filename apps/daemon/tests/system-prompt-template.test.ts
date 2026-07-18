@@ -313,6 +313,9 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     expect(out).toContain(
       '"$OD_NODE_BIN" "$OD_BIN" media generate --surface image --model <imageModel>',
     );
+    expect(out).toContain('Open Design media preflight: OD_NODE_BIN is unset');
+    expect(out).toContain('Open Design media preflight: OD_BIN must be an absolute path');
+    expect(out).toContain('[ ! -r "$OD_NODE_BIN" ] || [ ! -x "$OD_NODE_BIN" ]');
     expect(out).not.toContain('Do not require, request, or mention `OPENAI_API_KEY`');
     expect(out).not.toContain('## Codex built-in imagegen override');
   });

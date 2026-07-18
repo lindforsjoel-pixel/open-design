@@ -40,7 +40,7 @@ function registerRoutes(app: express.Express, staticHtml: string | null) {
       prepareDesignTokenContractRebuild: async () => ({ decision: { available: false } }) as never,
       readAvailableDesignSystem: async (id: string) => (id === 'bento' ? '# Bento' : null),
       readAvailableDesignSystemPackageInfo: async () => null,
-      readAvailableDesignSystemStaticFile: async (_id: string, filePath: string) =>
+      readAvailableDesignSystemStaticFile: async (_db, _id: string, filePath: string) =>
         staticHtml && filePath === 'system/kit.html'
           ? {
               bytes: Buffer.from(staticHtml, 'utf8'),

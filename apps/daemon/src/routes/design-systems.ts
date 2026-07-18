@@ -47,7 +47,7 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     prepareDesignTokenContractRebuild: (root: string, id: string, options?: { force?: boolean }) => Promise<DesignTokenContractRebuildPreparation>;
     readAvailableDesignSystem: (id: string) => Promise<string | null>;
     readAvailableDesignSystemPackageInfo: (id: string) => Promise<DesignSystemPackageInfo | null>;
-    readAvailableDesignSystemStaticFile: (id: string, filePath: string) => Promise<{
+    readAvailableDesignSystemStaticFile: (db: DbHandle, id: string, filePath: string) => Promise<{
       bytes: Buffer;
       contentType: string;
       updatedAt: string;
@@ -238,7 +238,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
 
   app.get('/api/design-systems/:id/showcase', async (req, res) => {
     try {
-      const packaged = await readAvailableDesignSystemStaticFile(req.params.id, PACKAGED_SHOWCASE_PATH);
+      const packaged = await readAvailableDesignSystemStaticFile(db, req.params.id, PACKAGED_SHOWCASE_PATH);
       if (packaged?.contentType.startsWith('text/html')) {
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Last-Modified', packaged.updatedAt);
@@ -262,7 +262,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
   app.get('/api/design-systems/:id/static', async (req, res) => {
     try {
       const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
-      const file = await readAvailableDesignSystemStaticFile(req.params.id, requestedPath);
+      const file = await readAvailableDesignSystemStaticFile(db, req.params.id, requestedPath);
       if (!file) return res.status(404).type('text/plain').send('not found');
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Last-Modified', file.updatedAt);
