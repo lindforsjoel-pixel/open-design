@@ -62,6 +62,25 @@ describe('renderMarkdown', () => {
     expect(out).toContain('>here</a>');
   });
 
+  it('renders angle-wrapped local file links whose absolute path contains spaces', () => {
+    const path = '/Users/joel/Library/Application Support/Open Design/projects/project-1/PRODUCT.md';
+    const out = html(`Created [PRODUCT.md](<${path}>).`);
+
+    expect(out).toContain('<a class="md-link"');
+    expect(out).toContain(`href="${path}"`);
+    expect(out).toContain('>PRODUCT.md</a>.');
+    expect(out).not.toContain('](<');
+  });
+
+  it('keeps incomplete angle-wrapped links and ordinary HTML-like content visible', () => {
+    const out = html('Keep <component-name> visible and [PRODUCT.md](</tmp/unfinished path).');
+
+    expect(out).toContain('&lt;component-name&gt;');
+    expect(out).toContain('[PRODUCT.md]');
+    expect(out).toContain('&lt;/tmp/unfinished path');
+    expect(out).not.toContain('<a class="md-link"');
+  });
+
   it('marks bare URLs with the bare-link class so CSS can apply URL-specific wrapping', () => {
     const out = html('See https://example.com/very/long/path?with=long&query=string');
     expect(out).toContain('md-link-bare');

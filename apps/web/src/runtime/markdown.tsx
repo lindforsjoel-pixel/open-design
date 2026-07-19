@@ -568,14 +568,18 @@ function renderInline(text: string, options?: RenderMarkdownOptions): ReactNode 
   //     letting the link branch win would render `[alt](url)` as a text
   //     link with `!` stranded as a sibling text node and the user would
   //     see the link copy but never the image.
-  //  3. explicit `[text](url)` markdown links before bare URL autolink so the
+  //  3. Angle-bracket destinations (`[text](<path with spaces>)`) before
+  //     their unwrapped counterparts. Codex uses this standard Markdown
+  //     form for absolute local paths containing spaces; without it, the
+  //     complete link syntax leaks into visible chat text.
+  //  4. explicit `[text](url)` markdown links before bare URL autolink so the
   //     autolink does not greedily swallow the closing paren.
-  //  4. bare http(s) URL autolink BEFORE italic markers — chat output often
+  //  5. bare http(s) URL autolink BEFORE italic markers — chat output often
   //     contains OAuth-style links with `_type=` / `_id=` query params, and
   //     leaving italic to win turns the URL into an italic-fragmented mess.
-  //  5. bold (**a** / __a__) before italic (*a* / _a_).
+  //  6. bold (**a** / __a__) before italic (*a* / _a_).
   const re =
-    /(`[^`]+`)|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s)<>]+)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\n]+\*)|(_[^_\n]+_)/g;
+    /(`[^`]+`)|!\[([^\]]*)\]\(<([^>\r\n]+)>\)|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(<([^>\r\n]+)>\)|\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s)<>]+)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\n]+\*)|(_[^_\n]+_)/g;
   let lastIndex = 0;
   let m: RegExpExecArray | null;
   let key = 0;
@@ -585,16 +589,18 @@ function renderInline(text: string, options?: RenderMarkdownOptions): ReactNode 
     }
     if (m[1]) {
       out.push(renderInlineCodeSpan(m[1].slice(1, -1), key++));
-    } else if (m[3] !== undefined) {
-      // Image: m[2] = alt (may be empty), m[3] = src
+    } else if (m[3] !== undefined || m[5] !== undefined) {
+      // Image: angle-wrapped captures are m[2]/m[3], ordinary captures are
+      // m[4]/m[5]. Alt text may be empty in either form.
       const src = m[3];
-      const alt = m[2] || '';
-      if (isSafeMarkdownImageSrc(src)) {
+      const resolvedSrc = src ?? m[5] ?? '';
+      const alt = (src !== undefined ? m[2] : m[4]) || '';
+      if (isSafeMarkdownImageSrc(resolvedSrc)) {
         out.push(
           <img
             key={key++}
             className="md-image"
-            src={src}
+            src={resolvedSrc}
             alt={alt}
             loading="lazy"
             referrerPolicy="no-referrer"
@@ -606,8 +612,9 @@ function renderInline(text: string, options?: RenderMarkdownOptions): ReactNode 
         // the user sees what the model meant to show.
         pushText(out, alt, key++, options);
       }
-    } else if (m[4] && m[5]) {
-      const href = m[5];
+    } else if ((m[6] && m[7]) || (m[8] && m[9])) {
+      const label = m[6] ?? m[8] ?? '';
+      const href = m[7] ?? m[9] ?? '';
       out.push(
         <a
           key={key++}
@@ -617,13 +624,13 @@ function renderInline(text: string, options?: RenderMarkdownOptions): ReactNode 
           rel="noreferrer noopener"
           onClick={linkClickHandler?.(href)}
         >
-          {m[4]}
+          {label}
         </a>,
       );
-    } else if (m[6]) {
+    } else if (m[10]) {
       // Bare URL — autolink with the URL as both href and visible text,
       // matching the Markdown `<https://…>` autolink convention.
-      const [href, suffix] = splitTrailingAutolinkPunctuation(m[6]);
+      const [href, suffix] = splitTrailingAutolinkPunctuation(m[10]);
       out.push(
         <a
           key={key++}
@@ -637,14 +644,14 @@ function renderInline(text: string, options?: RenderMarkdownOptions): ReactNode 
         </a>,
       );
       if (suffix) pushText(out, suffix, key++);
-    } else if (m[7]) {
-      out.push(<strong key={key++}>{m[7].slice(2, -2)}</strong>);
-    } else if (m[8]) {
-      out.push(<strong key={key++}>{m[8].slice(2, -2)}</strong>);
-    } else if (m[9]) {
-      out.push(<em key={key++}>{m[9].slice(1, -1)}</em>);
-    } else if (m[10]) {
-      out.push(<em key={key++}>{m[10].slice(1, -1)}</em>);
+    } else if (m[11]) {
+      out.push(<strong key={key++}>{m[11].slice(2, -2)}</strong>);
+    } else if (m[12]) {
+      out.push(<strong key={key++}>{m[12].slice(2, -2)}</strong>);
+    } else if (m[13]) {
+      out.push(<em key={key++}>{m[13].slice(1, -1)}</em>);
+    } else if (m[14]) {
+      out.push(<em key={key++}>{m[14].slice(1, -1)}</em>);
     }
     lastIndex = re.lastIndex;
   }

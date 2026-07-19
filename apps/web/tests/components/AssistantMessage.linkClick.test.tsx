@@ -161,6 +161,34 @@ describe('AssistantMessage — chat file-link routing (#1239)', () => {
     expect(window.location.pathname).toBe('/projects/other-project/files/deck-outline.md');
   });
 
+  it('renders and opens Codex angle-wrapped absolute paths containing spaces in the current workspace', () => {
+    const onRequestOpenFile = vi.fn();
+    const projectDir = '/Users/joel/Library/Application Support/Open Design/data/projects/project-1';
+    const filePath = `${projectDir}/PRODUCT.md`;
+    const { container } = render(
+      <AssistantMessage
+        message={messageWithText(`Created [PRODUCT.md](<${filePath}>).`)}
+        streaming={false}
+        projectId="project-1"
+        projectResolvedDir={projectDir}
+        onRequestOpenFile={onRequestOpenFile}
+      />,
+    );
+
+    const anchor = container.querySelector('a.md-link');
+    expect(anchor).not.toBeNull();
+    expect(anchor?.textContent).toBe('PRODUCT.md');
+    expect(anchor?.getAttribute('href')).toBe(filePath);
+    expect(container.textContent).not.toContain('](<');
+
+    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    anchor!.dispatchEvent(clickEvent);
+
+    expect(onRequestOpenFile).toHaveBeenCalledTimes(1);
+    expect(onRequestOpenFile).toHaveBeenCalledWith('PRODUCT.md');
+    expect(clickEvent.defaultPrevented).toBe(true);
+  });
+
   it('keeps just-written files under an imported baseDir with a projects/ segment in the current workspace', () => {
     // Reviewer scenario (#5611 round 3): the imported workspace lives under
     // `…/projects/acme/` and the agent just wrote `new-file.md` (not in the
